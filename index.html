@@ -1,0 +1,38 @@
+<style>
+    body {
+        background-color: black;
+        font-family: monospace;
+    }
+
+    .line {
+        cursor: default;
+    }
+
+    .line span {
+        background-color: black;
+        color: white;
+        margin-right: 6px;
+    }
+
+    .line span.error {
+        background-color: red;
+        color: white;
+    }
+
+    .line div {
+        display: inline-block;
+        min-width: 1px;
+        background-color: black;
+        color: white;
+    }
+
+    div[contenteditable] {
+        outline: none;
+    }
+
+</style>
+<head>
+</head>
+<body id="terminal">
+</body>
+<script src="main.js" type="module"></script>
