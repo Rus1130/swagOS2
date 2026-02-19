@@ -27,8 +27,9 @@ class OutputService {
 
 class CommandService {
     static commands = new Map();
+    static registeredCommands = new Set();
 
-    static register(name, body, fn){
+    static defineCommand(name, body, fn){
         this.commands.set(name, {body, fn});
 
         if(body.options && body.options.alias){
@@ -37,6 +38,53 @@ class CommandService {
 
             aliasBody.aliasOf = name;
             this.commands.set(body.options.alias, {body: aliasBody, fn});
+        }
+    }
+
+    static getCommand(name){
+        if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(name)) return null;
+        return this.commands.get(name);
+    }
+
+    static listCommands(){
+        return Array.from(CommandService.registeredCommands);
+    }
+
+    static unregisterCommand(name){
+        if(!CommandService.registeredCommands.has(name)) return;
+        const entry = this.commands.get(name);
+        if(!entry) throw new Error(`Cannot unregister unknown command: "${name}"`);
+
+        const commandNames = new Set();
+
+        commandNames.add(name);
+        if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
+
+        CommandService.registeredCommands.delete(commandNames);
+    }
+
+    static registerCommand(name){
+        if(CommandService.registeredCommands.has(name)) return;
+        const entry = this.commands.get(name);
+        if(!entry) throw new Error(`Cannot register unknown command: "${name}"`);
+
+        const commandNames = new Set();
+
+        commandNames.add(name);
+        if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
+
+        CommandService.registeredCommands.add(commandNames);
+    }
+
+    static bulkRegister(names){
+        for(const name of names){
+            this.registerCommand(name);
+        }
+    }
+
+    static bulkUnregister(names){
+        for(const name of names){
+            this.unregisterCommand(name);
         }
     }
 
@@ -60,27 +108,40 @@ class CommandService {
             positionalIndex++;
         }
 
-        for(const flagName of Object.keys(flags)){
-            const flagDef = flagSchema.find(s => s.name === flagName || s.short === flagName);
-            if(!flagDef){
-                return { valid: false, error: `Unknown flag: "${flagName.length === 1 ? '-' : '--'}${flagName}"` };
-            }
-            if(flagDef.type === "option" && flags[flagName] === true){
-                return { valid: false, error: `Flag "--${flagDef.name}" requires a value` };
-            }
-        }
-
         for(const param of flagSchema){
             if(param.required && flags[param.name] === undefined && flags[param.short] === undefined){
                 return { valid: false, error: `Missing required flag: "--${param.name}"` };
             }
         }
 
-        return { valid: true, error: null };
+        for(const flagName of Object.keys(flags)){
+            const flagDef = flagSchema.find(s => s.name === flagName || s.short === flagName);
+            if(!flagDef) continue;
+
+            let flagType = flagDef.datatype;
+
+            if(flagType === undefined){
+                CommandService.unregisterCommand(name);
+                return { valid: false, error: `Flag definition for "--${flagDef.name}" is missing datatype (string, num, bool)` };
+            }
+
+            let actualType = typeof flags[flagName];
+
+            if(flagType !== actualType){
+                return { valid: false, error: `Invalid value for flag "--${flagDef.name}": expected ${flagType}, got ${actualType}` };
+            }
+
+            if(typeof flagDef.default !== flagType){
+                CommandService.unregisterCommand(name);
+                return { valid: false, error: `Invalid default value for flag "--${flagDef.name}"` };
+            }
+        }
+
+        return { valid: true, error: null, flags };
     }
 }
 
-CommandService.register("print", {
+CommandService.defineCommand("print", {
     options: {
         description: "Prints the provided arguments to the console",
         alias: "echo"
@@ -104,7 +165,7 @@ CommandService.register("print", {
     };
 });
 
-CommandService.register("obuffer", {
+CommandService.defineCommand("obuffer", {
     options: {
         description: "Outputs the current output buffer",
         hidden: true
@@ -114,7 +175,7 @@ CommandService.register("obuffer", {
     OutputBuffer.flush();
 });
 
-CommandService.register("commandline", {
+CommandService.defineCommand("commandline", {
     options: {
         description: "Outputs a new command line for input",
         hidden: true
@@ -124,7 +185,7 @@ CommandService.register("commandline", {
     os.commandLine();
 });
 
-CommandService.register("linecount", {
+CommandService.defineCommand("linecount", {
     options: {
         description: "Outputs the number of lines in the output buffer",
         alias: "lc"
@@ -143,7 +204,7 @@ CommandService.register("linecount", {
     }
 });
 
-CommandService.register("help", {
+CommandService.defineCommand("help", {
     options: {
         description: "Lists all available commands. To get help with a specific command, use \"help commandname\"",
         alias: "?"
@@ -154,18 +215,26 @@ CommandService.register("help", {
             name: "aliases",
             short: "a",
             description: "Show command aliases in list",
+            datatype: "boolean",
+            default: true
         }
     ]
 }, (params, os, signal) => {
     const commandName = params.args[0];
     if(commandName){
-        const entry = CommandService.commands.get(commandName);
+        const entry = CommandService.getCommand(commandName);
 
 
         return;
     }
 
-    const commands = Array.from(CommandService.commands.entries()).filter(([name, entry]) => !entry.body.aliasOf && !entry.body.options?.hidden).map(([name, entry]) => {
+    const commands = Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().filter(name => {
+        const entry = CommandService.getCommand(name);
+        return !entry.body.aliasOf;
+    }).map(name => {
+        const entry = CommandService.getCommand(name);
+        
+        if(entry.body.options.hidden) return null;
         if(params.flags.aliases){
             const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
             if(aliases.length > 0){
@@ -173,7 +242,33 @@ CommandService.register("help", {
             }
         }
         return name;
-    })
+    }).filter(x => x !== null);
+
+    // const commands = Array.from(CommandService.registeredCommands).map(set => {
+    //     const name = Array.from(set)[0];
+    //     const entry = CommandService.getCommand(name);
+    //     console.log(entry)
+    //     if(entry.body.options.hidden) return null;
+
+    //     if(params.flags.aliases){
+    //         const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
+    //         if(aliases.length > 0){
+    //             return `${name} (${aliases.join(", ")})`;
+    //         }
+    //     }
+    //     return name;
+    // }).filter(x => x !== null);
+
+    // const commands = Array.from(CommandService.registeredCommands).f
+    //     const name = Array.from(set)[0];
+    //     if(params.flags.aliases){
+    //         const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
+    //         if(aliases.length > 0){
+    //             return `${name} (${aliases.join(", ")})`;
+    //         }
+    //     }
+    //     return name;
+    // });
 
     return [
         {
@@ -188,6 +283,8 @@ CommandService.register("help", {
     ]
 });
 
+
+CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help"]);
 
 class OutputBuffer {
     static buffer = [];
@@ -330,6 +427,10 @@ class OS {
     async runSingle(fragment, signal, pipe = null) {
         if (signal.aborted)
             throw new DOMException("Aborted", "AbortError");
+
+        if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(fragment.name)){
+            throw new OSError(`Unknown command: "${fragment.name}"`);
+        }
 
         const { valid, error } = CommandService.verify(fragment.name, fragment.args, fragment.flags);
         if (!valid) {
@@ -504,6 +605,12 @@ class OS {
         };
     }
 
+    sendCommand(command){
+        CommandExecService.enqueue(this.parseCommand(command));
+        CommandExecService.enqueue(this.parseCommand("obuffer"));
+        CommandExecService.enqueue(this.parseCommand("commandline"));
+    }
+
     parseCommand(string){
         const pipelines = this.parsePipeline(string);
 
@@ -550,9 +657,9 @@ class OS {
         const contentElem = document.createElement('div');
         const locElem = document.createElement('span');
 
-        contentElem.textContent = `${err.name}: ${err.message}`;
-        locElem.textContent = "INTERNAL ERROR";
-        locElem.classList.add('error', 'internal');
+        contentElem.textContent = `A JavaScript error occurred.`;
+        locElem.textContent = "Error";
+        locElem.classList.add('error');
 
         line.classList.add('line');
         line.appendChild(locElem);
@@ -567,15 +674,18 @@ class OS {
         const contentElem = document.createElement('div');
         const locElem = document.createElement('span');
 
+
+        document.querySelectorAll('.commandline').forEach(elem => elem.contentEditable = 'false');
+
+
         contentElem.contentEditable = 'plaintext-only';
         contentElem.spellcheck = false;
+        contentElem.classList.add('commandline');
 
         contentElem.addEventListener('keydown', (e) => {
             if(e.key === 'Enter'){
                 e.preventDefault();
-                CommandExecService.enqueue(this.parseCommand(contentElem.textContent));
-                CommandExecService.enqueue(this.parseCommand("obuffer"));
-                CommandExecService.enqueue(this.parseCommand("commandline"));
+                this.sendCommand(contentElem.textContent);
                 contentElem.contentEditable = 'false';
             }
         });

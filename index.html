@@ -2,6 +2,7 @@
     body {
         background-color: black;
         font-family: monospace;
+        font-size: 10pt;
     }
 
     .line {
@@ -12,7 +13,7 @@
     .line span {
         background-color: black;
         color: white;
-        margin-right: 6px;
+        margin-right: 5pt;
     }
 
     .line span.error {
@@ -23,6 +24,9 @@
     .line div {
         background-color: black;
         color: white;
+        word-break: break-all;
+        overflow-wrap: anywhere;
+        width: 100%;
     }
 
     div[contenteditable] {
