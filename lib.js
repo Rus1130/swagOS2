@@ -6,12 +6,195 @@ class OSCommandChain {
     addPart(part){
         this.parts.push(part);
     }
+
+    simplify(){
+        return this.parts.map(part => part.name).join("_");
+    }
 }
 
 class OSError extends Error {
     constructor(message){
         super(message);
         this.name = "OSError";
+    }
+}
+
+class OutputService {
+    static buffer = [];
+    static os = null;
+    static enabled = false;
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("OutputService_enable");
+    }
+
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("OutputService_disable");
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.buffer = [];
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("OutputService_init");
+    }
+
+    static add(line) {
+        if(!this.enabled) return;
+        DiagnosticService.record("OutputService_add");
+        this.buffer.push(line);
+    }
+
+    static flush() {
+        if(!this.enabled) return;
+        for(const line of this.buffer){
+            this.os.line(line.content, line.loc);
+        }
+        DiagnosticService.record("OutputService_flush");
+        this.buffer.length = 0;
+    }
+
+    static clear() {
+        if(!this.enabled) return;
+        DiagnosticService.record("OutputService_clear");
+        this.buffer.length = 0;
+    }
+
+    static isEmpty() {
+        if(!this.enabled) return true;
+        return this.buffer.length === 0;
+    }
+}
+
+class DiagnosticService {
+    static enabled = false;
+    static os = null;
+
+    static diagnosticData = [];
+
+    static enable(){
+        this.enabled = true;
+    }
+
+    static disable(){
+        this.enabled = false;
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+    }
+
+    static record(action){
+        if(!this.enabled) return;
+        this.diagnosticData.push({ action, timestamp: Date.now() });
+    }
+
+    static getData(){
+        return this.diagnosticData;
+    }
+}
+
+
+class CommandExecService {
+    static queue = [];
+    static running = false;
+    static os = null;
+    static enabled = false;
+
+    static currentAbort = null;
+    static currentReject = null;
+
+    static delay = 50;
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("CommandExecService_enable");
+    }
+
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("CommandExecService_disable");
+    }
+
+    static interrupt(err) {
+        if(!this.enabled) return;
+        if (!this.os) return;
+
+        this.queue.length = 0;
+
+        DiagnosticService.record("CommandExecService_interrupt");
+
+        if (this.currentAbort) {
+            this.currentAbort.abort();
+        }
+
+        if (this.currentReject) {
+            this.currentReject(err);
+            this.currentReject = null;
+        }
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.queue = [];
+        this.running = false;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("CommandExecService_init");
+    }
+
+    static enqueue(chain) {
+        if(!this.enabled) return;
+        if(!this.os) throw new Error("CommandExecService not initialized with OS instance");
+        return new Promise((resolve, reject) => {
+            DiagnosticService.record("CommandExecService_enqueue "+chain.simplify());
+            this.queue.push({ chain, resolve, reject });
+            this.runNext();
+        });
+    }
+
+    static async runNext() {
+        if(!this.enabled) return;
+        if (!this.os) throw new Error("CommandExecService not initialized with OS instance");
+        if (this.running) return;
+        if (this.queue.length === 0) return;
+
+        this.running = true;
+
+        const { chain, resolve, reject } = this.queue.shift();
+
+        let controller = new AbortController();
+        this.currentAbort = controller;
+        this.currentReject = reject;
+
+        try {
+            let result = await this.os.runChain(chain, controller.signal);
+            if(CommandExecService.delay > 0){
+                await new Promise(r => setTimeout(r, CommandExecService.delay));
+            }
+            resolve(result);
+        } catch (e) {
+            if (e.name === "AbortError") {
+                // silent
+            } else if (e instanceof OSError) {
+                DiagnosticService.record("CommandExecService_commandError "+chain.simplify());
+                this.os.error(e.message);
+            } else {
+                this.os.error(`A JavaScript error occurred.`);
+                console.error(e);
+            }
+            resolve(null);
+        } finally {
+            this.currentAbort = null;
+            this.currentReject = null;
+            this.running = false;
+            this.runNext();
+        }
     }
 }
 
@@ -33,6 +216,7 @@ class CommandService {
 
     static getCommand(name){
         if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(name)) return null;
+        DiagnosticService.record(`CommandService_get ${name}`);
         return this.commands.get(name);
     }
 
@@ -50,6 +234,7 @@ class CommandService {
         commandNames.add(name);
         if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
 
+        DiagnosticService.record(`CommandService_unregister ${name}`);
         CommandService.registeredCommands.delete(commandNames);
     }
 
@@ -63,6 +248,7 @@ class CommandService {
         commandNames.add(name);
         if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
 
+        DiagnosticService.record(`CommandService_register ${name}`);
         CommandService.registeredCommands.add(commandNames);
     }
 
@@ -70,16 +256,21 @@ class CommandService {
         for(const name of names){
             this.registerCommand(name);
         }
+
+        DiagnosticService.record(`CommandService_bulkRegister ${names.join("_")}`);
     }
 
     static bulkUnregister(names){
         for(const name of names){
             this.unregisterCommand(name);
         }
+        DiagnosticService.record(`CommandService_bulkUnregister ${names.join("_")}`);
     }
 
     static verify(name, args, flags){
         const entry = this.commands.get(name);
+
+        DiagnosticService.record(`CommandService_verify ${name}`);
 
         if(!entry){
             return { valid: false, error: `Unknown command: "${name}"` };
@@ -95,6 +286,9 @@ class CommandService {
             const required = param.required || false;
             if(required && positionalIndex >= args.length){
                 return { valid: false, error: `Missing required argument: "${param.name}"` };
+            }
+            if(param.options && !param.options.includes(args[positionalIndex])){
+                return { valid: false, error: `Invalid value for argument "${param.name}": expected one of "${param.options.join("\", \"")}", got "${args[positionalIndex]}"` };
             }
             positionalIndex++;
         }
@@ -137,6 +331,58 @@ class CommandService {
     }
 }
 
+CommandService.defineCommand("service", {
+    options: {
+        description: "Lists all available services and their status",
+    },
+    schema: [
+        {
+            type: "positional",
+            name: "action",
+            description: "The action to perform",
+            required: true,
+            options: ["list", "enable", "disable", "data"],
+        },
+        {
+            type: "positional",
+            name: "service",
+            description: "The service to enable/disable (required for enable/disable action)",
+            required: false,
+        }
+    ]
+}, (params, os, signal) => {
+    const action = params.args[0];
+    if(action === "data"){
+        return DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`).map(x => ({ type: "line", content: x, loc: "" }))
+    } else if(action === "list"){
+        return [
+            { type: "line", content: `OutputService: ${OutputService.enabled ? "enabled" : "disabled"}`, loc: "" },
+            { type: "line", content: `CommandExecService: ${CommandExecService.enabled ? "enabled" : "disabled"}`, loc: "" },
+            { type: "line", content: `DiagnosticService: ${DiagnosticService.enabled ? "enabled" : "disabled"}`, loc: "" },
+        ];
+    } else if(action === "enable" || action === "disable"){
+        const serviceName = params.args[1];
+        if(!serviceName) return { type: "error", content: "Service name is required for enable/disable action" };
+
+        const serviceMap = {
+            "output": OutputService,
+            "commandexec": CommandExecService,
+            "diagnostic": DiagnosticService,
+        };
+        const service = serviceMap[serviceName.toLowerCase()];
+
+        if(!service) return { type: "error", content: `Unknown service: "${serviceName}"` };
+        if(action === "enable"){
+            service.enable();
+            return { type: "line", content: `Enabled ${serviceName} service`, loc: "" };
+        } else {
+            service.disable();
+            return { type: "line", content: `Disabled ${serviceName} service`, loc: "" };
+        }
+    }
+});
+
+
 CommandService.defineCommand("clear", {
     options: {
         description: "Clears the output buffer and the console",
@@ -158,7 +404,7 @@ CommandService.defineCommand("print", {
             description: "The text to print",
             type: "positional",
             required: true,
-            pipeableFrom: "text"
+            pipeableFrom: "text",
         },
         {
             name: "loc_text",
@@ -247,53 +493,58 @@ CommandService.defineCommand("help", {
     ]
 }, ({flags, args}, os, signal) => {
     const commandName = args[0];
-    if(commandName){
+
+    if (commandName) {
+
         const entry = CommandService.getCommand(commandName);
-        if(!entry) throw new OSError(`Unknown command: "${commandName}"`);
+        if (!entry) throw new OSError(`Unknown command: "${commandName}"`);
 
-        let name = commandName;
-        if(entry.body.aliasOf) name = entry.body.aliasOf;
+        let name = entry.body.aliasOf ?? commandName;
 
-        if(flags.verbose){
+        const schema = entry.body.schema || [];
+        const positionalArgs = schema.filter(s => s.type === "positional");
+        const flagArgs = schema.filter(s => s.type === "flag" || s.type === "option");
+
+        if (flags.verbose) {
+
             let usage = `Usage: ${name}`;
             let descriptions = [];
-            const positionalArgs = entry.body.schema ? entry.body.schema.filter(s => s.type === "positional") : [];
-            const flags = entry.body.schema ? entry.body.schema.filter(s => s.type === "flag" || s.type === "option") : [];
 
-            for(const param of positionalArgs){
-                if(param.type === "positional" && param.required){
-                    usage += ` <${param.name}>`;
-                } else if(param.type === "positional" && !param.required){
-                    usage += ` [${param.name}]`;
-                }
+            for (const param of positionalArgs) {
+                usage += param.required
+                    ? ` <${param.name}>`
+                    : ` [${param.name}]`;
             }
 
-            if(entry.body.aliasOf){
+            if (entry.body.aliasOf) {
                 descriptions.push({ type: "line", content: `Alias of: ${entry.body.aliasOf}`, loc: "" });
-            } else if (entry.body.options.alias){
+            } else if (entry.body.options.alias) {
                 descriptions.push({ type: "line", content: `Alias: ${entry.body.options.alias}`, loc: "" });
             }
 
-            for(const param of flags){
-                let flagPart = `-${param.short}|--${param.name}`;
-                if((param.type === "flag") && param.required){
-                    usage += ` ${flagPart}=<${param.datatype}>`;
-                } else if(param.type === "flag" && !param.required){
-                    usage += ` [${flagPart}=<${param.datatype}>]`;
-                }
+            for (const param of flagArgs) {
+                const flagPart = `-${param.short}|--${param.name}`;
+                usage += param.required
+                    ? ` ${flagPart}=<${param.datatype}>`
+                    : ` [${flagPart}=<${param.datatype}>]`;
             }
 
             descriptions.push({ type: "line", content: "", loc: "" });
 
-            for(const param of positionalArgs){
+            for (const param of positionalArgs) {
                 descriptions.push({ type: "line", content: `${param.name}: ${param.description || "No description available"}`, loc: "" });
                 descriptions.push({ type: "line", content: `    Type: positional`, loc: "" });
                 descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
+
+                if (param.options) {
+                    descriptions.push({ type: "line", content: `    Options: ${param.options.join(", ")}`, loc: "" });
+                }
+
                 descriptions.push({ type: "line", content: "", loc: "" });
             }
 
-            for(const param of flags){
-                let flagPart = `-${param.short}|--${param.name}`;
+            for (const param of flagArgs) {
+                const flagPart = `-${param.short}|--${param.name}`;
                 descriptions.push({ type: "line", content: `${flagPart}: ${param.description || "No description available"}`, loc: "" });
                 descriptions.push({ type: "line", content: `    Type: ${param.type}`, loc: "" });
                 descriptions.push({ type: "line", content: `    Datatype: ${param.datatype}`, loc: "" });
@@ -301,235 +552,204 @@ CommandService.defineCommand("help", {
                 descriptions.push({ type: "line", content: "", loc: "" });
             }
 
-
-
             return [
                 { type: "line", content: usage, loc: "" },
                 { type: "line", content: entry.body.options.description || "No description available", loc: "" },
                 ...descriptions
-            ]
+            ];
 
         } else {
+
             let usage = `Usage: ${name}`;
-            const positionalArgs = entry.body.schema ? entry.body.schema.filter(s => s.type === "positional") : [];
-            const flags = entry.body.schema ? entry.body.schema.filter(s => s.type === "flag" || s.type === "option") : [];
 
-            for(const param of positionalArgs){
-                if(param.type === "positional" && param.required){
-                    usage += ` <${param.name}>`;
-                } else if(param.type === "positional" && !param.required){
-                    usage += ` [${param.name}]`;
-                }
+            for (const param of positionalArgs) {
+                usage += param.required
+                    ? ` <${param.name}>`
+                    : ` [${param.name}]`;
             }
 
-            for(const param of flags){
-                let flagPart = param.short ? `-${param.short}` : `--${param.name}`;
-                if((param.type === "flag") && param.required){
-                    usage += ` ${flagPart}`;
-                } else if(param.type === "flag" && !param.required){
-                    usage += ` [${flagPart}]`;
-                }
+            for (const param of flagArgs) {
+                const flagPart = param.short ? `-${param.short}` : `--${param.name}`;
+                usage += param.required
+                    ? ` ${flagPart}`
+                    : ` [${flagPart}]`;
             }
-
 
             return [
                 { type: "line", content: usage, loc: "" },
-                { type: "line", content: entry.body.options.description || "No description available", loc: "" },
-            ]
+                { type: "line", content: entry.body.options.description || "No description available", loc: "" }
+            ];
         }
     }
 
-    const commands = Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().filter(name => {
-        const entry = CommandService.getCommand(name);
-        return !entry.body.aliasOf;
-    }).map(name => {
-        const entry = CommandService.getCommand(name);
-        
-        if(entry.body.options.hidden) return null;
-        if(flags.aliases){
-            const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
-            if(aliases.length > 0){
-                return `${name} (${aliases.join(", ")})`;
+    const entries = [];
+
+    // flatten once and resolve once
+    for (const nameSet of CommandService.registeredCommands) {
+        for (const name of nameSet) {
+
+            const entry = CommandService.getCommand(name);
+            if (!entry) continue;
+
+            entries.push({ name, entry });
+        }
+    }
+
+    const commands = entries
+        .filter(({ entry }) => !entry.body.aliasOf)
+        .filter(({ entry }) => !entry.body.options.hidden)
+        .map(({ name }) => {
+
+            if (flags.aliases) {
+                const aliases = [];
+
+                for (const [n, e] of CommandService.commands) {
+                    if (e.body.aliasOf === name) aliases.push(n);
+                }
+
+                if (aliases.length) {
+                    return `${name} (${aliases.join(", ")})`;
+                }
             }
-        }
-        return name;
-    }).filter(x => x !== null).sort((a, b) => a.localeCompare(b));
+
+            return name;
+        })
+        .sort((a, b) => a.localeCompare(b));
+
     return [
-        {
-            type: "line",
-            content: "Available commands:",
-            loc: ""
-        }, {
-            type: "line",
-            content: commands.join(", "),
-            loc: ""
-        }
-    ]
+        { type: "line", content: "Available commands:", loc: "" },
+        { type: "line", content: commands.join(", "), loc: "" }
+    ];
 });
 
 
-CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear"]);
-
-class OutputService {
-    static buffer = [];
-    static os = null;
-    static enabled = false;
-
-    static enable(){
-        this.enabled = true;
-    }
-
-    static disable(){
-        this.enabled = false;
-    }
-
-    static init(os) {
-        if(this.os) return;
-        this.buffer = [];
-        this.os = os;
-        this.enabled = true;
-    }
-
-    static add(line) {
-        if(!this.enabled) return;
-        this.buffer.push(line);
-    }
-
-    static flush() {
-        if(!this.enabled) return;
-        for(const line of this.buffer){
-            this.os.line(line.content, line.loc);
-        }
-        this.buffer.length = 0;
-    }
-
-    static clear() {
-        if(!this.enabled) return;
-        this.buffer.length = 0;
-    }
-
-    static isEmpty() {
-        if(!this.enabled) return true;
-        return this.buffer.length === 0;
-    }
-}
-
-class DiagnosticService {
-    static enabled = false;
-    static os = null;
-
-    static enable(){
-        this.enabled = true;
-    }
-
-    static disable(){
-        this.enabled = false;
-    }
-}
-
-
-class CommandExecService {
-    static queue = [];
-    static running = false;
-    static os = null;
-    static enabled = false;
-
-    static currentAbort = null;
-    static currentReject = null;
-
-    static delay = 50;
-
-    static diagnostics = {
-        totalExecuted: 0,
-        totalTime: 0,
-    }
-
-    static enable(){
-        this.enabled = true;
-    }
-
-    static disable(){
-        this.enabled = false;
-    }
-
-    static interrupt(err) {
-        if(!this.enabled) return;
-        if (!this.os) return;
-
-        this.queue.length = 0;
-
-        if (this.currentAbort) {
-            this.currentAbort.abort();
-        }
-
-        if (this.currentReject) {
-            this.currentReject(err);
-            this.currentReject = null;
-        }
-    }
-
-    static init(os) {
-        if(this.os) return;
-        this.queue = [];
-        this.running = false;
-        this.os = os;
-        this.enabled = true;
-    }
-
-    static enqueue(chain) {
-        if(!this.enabled) return;
-        if(!this.os) throw new Error("CommandExecService not initialized with OS instance");
-        return new Promise((resolve, reject) => {
-            this.queue.push({ chain, resolve, reject });
-            this.runNext();
-        });
-    }
-
-    static async runNext() {
-        if(!this.enabled) return;
-        if (!this.os) throw new Error("CommandExecService not initialized with OS instance");
-        if (this.running) return;
-        if (this.queue.length === 0) return;
-
-        this.running = true;
-
-        const { chain, resolve, reject } = this.queue.shift();
-
-        let controller = new AbortController();
-        this.currentAbort = controller;
-        this.currentReject = reject;
-
-        try {
-            let result = await this.os.runChain(chain, controller.signal);
-            if(CommandExecService.delay > 0){
-                await new Promise(r => setTimeout(r, CommandExecService.delay));
-            }
-            resolve(result);
-        } catch (e) {
-            if (e.name === "AbortError") {
-                // silent
-            } else if (e instanceof OSError) {
-                this.os.error(e.message);
-            } else {
-                this.os.error(`A JavaScript error occurred.`);
-                console.error(e);
-            }
-            resolve(null);
-        } finally {
-            this.currentAbort = null;
-            this.currentReject = null;
-            this.running = false;
-            this.runNext();
-        }
-    }
-}
+CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service"]);
 
 class OS {
-
     commandRunning = false;
+
+    // d/mn/Y h:m:s z
+    timestamp(template, timestamp) {
+        const now = timestamp != null ? new Date(Number(timestamp)) : new Date();
+
+        let dowListShort = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+        let dowListLong = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+        let monthListShort = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+        let monthListLong = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
+
+        const dayOfWeekShort = dowListShort[now.getDay()];
+        const dayOfWeekLong = dowListLong[now.getDay()];
+
+        const year = now.getFullYear();
+        const yearShort = now.getFullYear().toString().slice(-2);
+
+        const monthNumber = String(now.getMonth() + 1).padStart(2, '0');
+        const monthNumberUnpadded = String(now.getMonth() + 1);
+        const monthShort = monthListShort[now.getMonth()];
+        const monthLong = monthListLong[now.getMonth()]; 
+
+        const day = String(now.getDate()).padStart(2, '0');
+        const dayUnpadded = String(now.getDate());
+        const ordinalDay = String(now.getDate()) + getOrdinalSuffix(+day);
+
+        const hour24 = String(now.getHours()).padStart(2, '0');
+        const hour12 = String((now.getHours() + 11) % 12 + 1).padStart(2, '0');
+        const hour24Unpadded = String(now.getHours());
+        const hour12Unpadded = String((now.getHours() + 11) % 12 + 1);
+
+        const minute = String(now.getMinutes()).padStart(2, '0');
+        const minuteUnpadded = String(now.getMinutes());
+
+        const second = String(now.getSeconds()).padStart(2, '0');
+        const secondUnpadded = String(now.getSeconds());
+
+        const millisecond = String(now.getMilliseconds()).padStart(3, '0');
+        const millisecondUnpadded = String(now.getMilliseconds());
+
+        const ampm = now.getHours() >= 12 ? 'PM' : 'AM';
+
+        const timezone = new Date().toLocaleString(["en-US"], {timeZoneName: "short"}).split(" ").pop();
+
+        function getISOOffset(date = new Date()) {
+            const offset = date.getTimezoneOffset();
+            const sign = offset > 0 ? "-" : "+";
+            const abs = Math.abs(offset);
+            const hours = String(Math.floor(abs / 60)).padStart(2, "0");
+            const mins  = String(abs % 60).padStart(2, "0");
+            return `${sign}${hours}:${mins}`;
+        }
+
+        const isoOffset = getISOOffset(now);
+
+        function getOrdinalSuffix(num) {
+            if (typeof num !== "number" || isNaN(num)) return "";
+        
+            let lastDigit = num % 10;
+            let lastTwoDigits = num % 100;
+        
+            if (lastTwoDigits >= 11 && lastTwoDigits <= 13) return "th";
+        
+            switch (lastDigit) {
+                case 1: return "st";
+                case 2: return "nd";
+                case 3: return "rd";
+                default: return "th";
+            }
+        }
+
+        // totally not ai
+        const replacements = [
+            { char: 'w', value: dayOfWeekShort },
+            { char: 'W', value: dayOfWeekLong },
+
+            { char: 'Y', value: year },
+            { char: 'y', value: yearShort },
+
+            { char: 'mn', value: monthNumber },
+            { char: 'mnu', value: monthNumberUnpadded },
+            { char: "ms", value: monthShort },
+            { char: "M", value: monthLong },
+
+            { char: 'd', value: day },
+            { char: 'du', value: dayUnpadded },
+            { char: "D", value: ordinalDay },
+
+            { char: 'h', value: hour24 },
+            { char: 'hu', value: hour24Unpadded },
+            { char: 'H', value: hour12 },
+            { char: 'Hu', value: hour12Unpadded },
+
+            { char: 'm', value: minute },
+            { char: 'mu', value: minuteUnpadded },
+
+            { char: 's', value: second },
+            { char: 'su', value: secondUnpadded },
+
+            { char: 'l', value: millisecond },
+            { char: 'lu', value: millisecondUnpadded },
+
+            { char: 'a', value: ampm },
+
+            { char: 'z', value: timezone },
+            { char: 'Z', value: isoOffset },
+        ];
+
+        let replacementMap = Object.fromEntries(replacements.map(({ char, value }) => [char, value]));
+
+        let dateString = template.replace(/(?<!!)([a-zA-Z]+)/g, (match) => {
+            return replacementMap[match] ?? match
+        });
+
+        dateString = dateString.replace(/!([a-zA-Z])/g, (_, p1) => {
+            return p1;
+        });
+
+        return dateString;
+    }
 
     constructor(elem){
         this.elem = elem;
+        DiagnosticService.init(this);
         CommandExecService.init(this);
         OutputService.init(this);
     }
@@ -538,8 +758,10 @@ class OS {
         let pipe = null;
 
         for (let i = 0; i < chain.parts.length; i++) {
-            if (signal.aborted)
+            if (signal.aborted){
+                DiagnosticService.record("OS_runChain_aborted");
                 throw new DOMException("Aborted", "AbortError");
+            }
 
             const result = await this.runSingle(chain.parts[i], signal, pipe);
 
@@ -560,8 +782,10 @@ class OS {
     }
 
     async runSingle(fragment, signal, pipe = null) {
-        if (signal.aborted)
+        if (signal.aborted) {
+            DiagnosticService.record("OS_runSingle_aborted");
             throw new DOMException("Aborted", "AbortError");
+        }
 
         if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(fragment.name)){
             throw new OSError(`Unknown command: "${fragment.name}"`);
@@ -583,12 +807,13 @@ class OS {
             normalizedFlags[flagDef ? flagDef.name : key] = value;
         }
 
+        DiagnosticService.record(`CommandExecService_run ${fragment.name}`);
+
         const result = await entry.fn({ args: fragment.args, flags: normalizedFlags, pipe }, this, signal);
 
         if (result?.type === "error") {
             throw new OSError(result.content);
         }
-
         return result ?? null;
     }
 
