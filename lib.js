@@ -92,7 +92,8 @@ class CommandService {
 
         let positionalIndex = 0;
         for(const param of positionalSchema){
-            if(param.required && !param.pipeableFrom && (positionalIndex >= args.length || args[positionalIndex] === undefined)){
+            const required = param.required || false;
+            if(required && positionalIndex >= args.length){
                 return { valid: false, error: `Missing required argument: "${param.name}"` };
             }
             positionalIndex++;
@@ -136,10 +137,20 @@ class CommandService {
     }
 }
 
+CommandService.defineCommand("clear", {
+    options: {
+        description: "Clears the output buffer and the console",
+        alias: "cls"
+    },
+    schema: []
+}, (params, os, signal) => {
+    OutputService.clear();
+    os.elem.innerHTML = "";
+})
+
 CommandService.defineCommand("print", {
     options: {
         description: "Prints the provided arguments to the console",
-        alias: "echo"
     },
     schema: [
         {
@@ -148,15 +159,23 @@ CommandService.defineCommand("print", {
             type: "positional",
             required: true,
             pipeableFrom: "text"
+        },
+        {
+            name: "loc_text",
+            description: "The text to show in the location part of the line",
+            type: "positional",
+            short: "l",
+            datatype: "string"
         }
     ]
 }, ({args, flags, pipe}, os, signal) => {
-    const text = args[0] ?? (Array.isArray(pipe) && pipe.length ? pipe.map(l => l.content).join("\n") : null);
-    if(text === null) throw new OSError("Missing required argument: \"text\"");
+    const text = args[0];
+    const loc = args[1] || "";
+
     return {
         type: "line",
         content: text,
-        loc: ""
+        loc: loc
     };
 });
 
@@ -182,7 +201,7 @@ CommandService.defineCommand("commandline", {
 
 CommandService.defineCommand("linecount", {
     options: {
-        description: "Outputs the number of lines in the output buffer",
+        description: "Outputs the number of lines",
         alias: "lc"
     },
     schema: []
@@ -194,7 +213,7 @@ CommandService.defineCommand("linecount", {
     }
     else return {
         type: "line",
-        content: Array.from(os.elem.children).filter(child => child.classList.contains('line')).length,
+        content: Array.from(os.elem.children).filter(child => child.classList.contains('line')).length - 1,
         loc: ""
     }
 });
@@ -211,16 +230,113 @@ CommandService.defineCommand("help", {
             short: "a",
             description: "Show command aliases in list",
             datatype: "boolean",
-            default: true
+        },
+        {
+            type: "positional",
+            name: "command",
+            description: "The command to get help for",
+            required: false,
+        },
+        {
+            type: "flag",
+            name: "verbose",
+            short: "v",
+            description: "Show detailed help information for each command",
+            datatype: "boolean",
         }
     ]
-}, (params, os, signal) => {
-    const commandName = params.args[0];
+}, ({flags, args}, os, signal) => {
+    const commandName = args[0];
     if(commandName){
         const entry = CommandService.getCommand(commandName);
+        if(!entry) throw new OSError(`Unknown command: "${commandName}"`);
+
+        let name = commandName;
+        if(entry.body.aliasOf) name = entry.body.aliasOf;
+
+        if(flags.verbose){
+            let usage = `Usage: ${name}`;
+            let descriptions = [];
+            const positionalArgs = entry.body.schema ? entry.body.schema.filter(s => s.type === "positional") : [];
+            const flags = entry.body.schema ? entry.body.schema.filter(s => s.type === "flag" || s.type === "option") : [];
+
+            for(const param of positionalArgs){
+                if(param.type === "positional" && param.required){
+                    usage += ` <${param.name}>`;
+                } else if(param.type === "positional" && !param.required){
+                    usage += ` [${param.name}]`;
+                }
+            }
+
+            if(entry.body.aliasOf){
+                descriptions.push({ type: "line", content: `Alias of: ${entry.body.aliasOf}`, loc: "" });
+            } else if (entry.body.options.alias){
+                descriptions.push({ type: "line", content: `Alias: ${entry.body.options.alias}`, loc: "" });
+            }
+
+            for(const param of flags){
+                let flagPart = `-${param.short}|--${param.name}`;
+                if((param.type === "flag") && param.required){
+                    usage += ` ${flagPart}=<${param.datatype}>`;
+                } else if(param.type === "flag" && !param.required){
+                    usage += ` [${flagPart}=<${param.datatype}>]`;
+                }
+            }
+
+            descriptions.push({ type: "line", content: "", loc: "" });
+
+            for(const param of positionalArgs){
+                descriptions.push({ type: "line", content: `${param.name}: ${param.description || "No description available"}`, loc: "" });
+                descriptions.push({ type: "line", content: `    Type: positional`, loc: "" });
+                descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
+                descriptions.push({ type: "line", content: "", loc: "" });
+            }
+
+            for(const param of flags){
+                let flagPart = `-${param.short}|--${param.name}`;
+                descriptions.push({ type: "line", content: `${flagPart}: ${param.description || "No description available"}`, loc: "" });
+                descriptions.push({ type: "line", content: `    Type: ${param.type}`, loc: "" });
+                descriptions.push({ type: "line", content: `    Datatype: ${param.datatype}`, loc: "" });
+                descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
+                descriptions.push({ type: "line", content: "", loc: "" });
+            }
 
 
-        return;
+
+            return [
+                { type: "line", content: usage, loc: "" },
+                { type: "line", content: entry.body.options.description || "No description available", loc: "" },
+                ...descriptions
+            ]
+
+        } else {
+            let usage = `Usage: ${name}`;
+            const positionalArgs = entry.body.schema ? entry.body.schema.filter(s => s.type === "positional") : [];
+            const flags = entry.body.schema ? entry.body.schema.filter(s => s.type === "flag" || s.type === "option") : [];
+
+            for(const param of positionalArgs){
+                if(param.type === "positional" && param.required){
+                    usage += ` <${param.name}>`;
+                } else if(param.type === "positional" && !param.required){
+                    usage += ` [${param.name}]`;
+                }
+            }
+
+            for(const param of flags){
+                let flagPart = param.short ? `-${param.short}` : `--${param.name}`;
+                if((param.type === "flag") && param.required){
+                    usage += ` ${flagPart}`;
+                } else if(param.type === "flag" && !param.required){
+                    usage += ` [${flagPart}]`;
+                }
+            }
+
+
+            return [
+                { type: "line", content: usage, loc: "" },
+                { type: "line", content: entry.body.options.description || "No description available", loc: "" },
+            ]
+        }
     }
 
     const commands = Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().filter(name => {
@@ -230,14 +346,14 @@ CommandService.defineCommand("help", {
         const entry = CommandService.getCommand(name);
         
         if(entry.body.options.hidden) return null;
-        if(params.flags.aliases){
+        if(flags.aliases){
             const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
             if(aliases.length > 0){
                 return `${name} (${aliases.join(", ")})`;
             }
         }
         return name;
-    }).filter(x => x !== null);
+    }).filter(x => x !== null).sort((a, b) => a.localeCompare(b));
     return [
         {
             type: "line",
@@ -252,7 +368,7 @@ CommandService.defineCommand("help", {
 });
 
 
-CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help"]);
+CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear"]);
 
 class OutputService {
     static buffer = [];
@@ -298,6 +414,19 @@ class OutputService {
     }
 }
 
+class DiagnosticService {
+    static enabled = false;
+    static os = null;
+
+    static enable(){
+        this.enabled = true;
+    }
+
+    static disable(){
+        this.enabled = false;
+    }
+}
+
 
 class CommandExecService {
     static queue = [];
@@ -307,6 +436,13 @@ class CommandExecService {
 
     static currentAbort = null;
     static currentReject = null;
+
+    static delay = 50;
+
+    static diagnostics = {
+        totalExecuted: 0,
+        totalTime: 0,
+    }
 
     static enable(){
         this.enabled = true;
@@ -330,8 +466,6 @@ class CommandExecService {
             this.currentReject(err);
             this.currentReject = null;
         }
-
-        this.running = false;
     }
 
     static init(os) {
@@ -367,6 +501,9 @@ class CommandExecService {
 
         try {
             let result = await this.os.runChain(chain, controller.signal);
+            if(CommandExecService.delay > 0){
+                await new Promise(r => setTimeout(r, CommandExecService.delay));
+            }
             resolve(result);
         } catch (e) {
             if (e.name === "AbortError") {
@@ -374,7 +511,8 @@ class CommandExecService {
             } else if (e instanceof OSError) {
                 this.os.error(e.message);
             } else {
-                this.os.internalError(e);
+                this.os.error(`A JavaScript error occurred.`);
+                console.error(e);
             }
             resolve(null);
         } finally {
@@ -647,23 +785,6 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
-    }
-
-    internalError(err){
-        const line = document.createElement('div');
-        const contentElem = document.createElement('div');
-        const locElem = document.createElement('span');
-
-        contentElem.textContent = `A JavaScript error occurred.`;
-        locElem.textContent = "Error";
-        locElem.classList.add('error');
-
-        line.classList.add('line');
-        line.appendChild(locElem);
-        line.appendChild(contentElem);
-        this.elem.appendChild(line);
-
-        console.error(err);
     }
 
     commandLine(loc = ">"){
