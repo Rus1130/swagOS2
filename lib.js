@@ -15,16 +15,6 @@ class OSError extends Error {
     }
 }
 
-class OutputService {
-    static buffer = [];
-    static os = null;
-    static init(os) {
-        if(this.os) return;
-        this.buffer = [];
-        this.os = os;
-    }
-}
-
 class CommandService {
     static commands = new Map();
     static registeredCommands = new Set();
@@ -177,7 +167,7 @@ CommandService.defineCommand("obuffer", {
     },
     schema: []
 }, (params, os, signal) => {
-    OutputBuffer.flush();
+    OutputService.flush();
 });
 
 CommandService.defineCommand("commandline", {
@@ -264,21 +254,33 @@ CommandService.defineCommand("help", {
 
 CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help"]);
 
-class OutputBuffer {
+class OutputService {
     static buffer = [];
     static os = null;
+    static enabled = false;
+
+    static enable(){
+        this.enabled = true;
+    }
+
+    static disable(){
+        this.enabled = false;
+    }
 
     static init(os) {
         if(this.os) return;
         this.buffer = [];
         this.os = os;
+        this.enabled = true;
     }
 
     static add(line) {
+        if(!this.enabled) return;
         this.buffer.push(line);
     }
 
     static flush() {
+        if(!this.enabled) return;
         for(const line of this.buffer){
             this.os.line(line.content, line.loc);
         }
@@ -286,10 +288,12 @@ class OutputBuffer {
     }
 
     static clear() {
+        if(!this.enabled) return;
         this.buffer.length = 0;
     }
 
     static isEmpty() {
+        if(!this.enabled) return true;
         return this.buffer.length === 0;
     }
 }
@@ -299,11 +303,21 @@ class CommandExecService {
     static queue = [];
     static running = false;
     static os = null;
+    static enabled = false;
 
     static currentAbort = null;
     static currentReject = null;
 
+    static enable(){
+        this.enabled = true;
+    }
+
+    static disable(){
+        this.enabled = false;
+    }
+
     static interrupt(err) {
+        if(!this.enabled) return;
         if (!this.os) return;
 
         this.queue.length = 0;
@@ -325,9 +339,11 @@ class CommandExecService {
         this.queue = [];
         this.running = false;
         this.os = os;
+        this.enabled = true;
     }
 
     static enqueue(chain) {
+        if(!this.enabled) return;
         if(!this.os) throw new Error("CommandExecService not initialized with OS instance");
         return new Promise((resolve, reject) => {
             this.queue.push({ chain, resolve, reject });
@@ -336,6 +352,7 @@ class CommandExecService {
     }
 
     static async runNext() {
+        if(!this.enabled) return;
         if (!this.os) throw new Error("CommandExecService not initialized with OS instance");
         if (this.running) return;
         if (this.queue.length === 0) return;
@@ -377,7 +394,6 @@ class OS {
         this.elem = elem;
         CommandExecService.init(this);
         OutputService.init(this);
-        OutputBuffer.init(this);
     }
 
     async runChain(chain, signal) {
@@ -399,7 +415,7 @@ class OS {
         }
 
         if (Array.isArray(pipe)) {
-            for (const line of pipe) OutputBuffer.add(line);
+            for (const line of pipe) OutputService.add(line);
         }
 
         return pipe;
