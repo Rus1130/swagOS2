@@ -127,11 +127,16 @@ class CommandService {
 
             let actualType = typeof flags[flagName];
 
+            if(/-?\d+/.test(flags[flagName])){
+                actualType = "number";
+                flags[flagName] = Number(flags[flagName]);
+            }
+
             if(flagType !== actualType){
                 return { valid: false, error: `Invalid value for flag "--${flagDef.name}": expected ${flagType}, got ${actualType}` };
             }
 
-            if(typeof flagDef.default !== flagType){
+            if(flagDef.default && typeof flagDef.default !== flagType){
                 CommandService.unregisterCommand(name);
                 return { valid: false, error: `Invalid default value for flag "--${flagDef.name}"` };
             }
@@ -182,7 +187,7 @@ CommandService.defineCommand("commandline", {
     },
     schema: []
 }, (params, os, signal) => {
-    os.commandLine();
+    if(!os.commandRunning) os.commandLine();
 });
 
 CommandService.defineCommand("linecount", {
@@ -243,33 +248,6 @@ CommandService.defineCommand("help", {
         }
         return name;
     }).filter(x => x !== null);
-
-    // const commands = Array.from(CommandService.registeredCommands).map(set => {
-    //     const name = Array.from(set)[0];
-    //     const entry = CommandService.getCommand(name);
-    //     console.log(entry)
-    //     if(entry.body.options.hidden) return null;
-
-    //     if(params.flags.aliases){
-    //         const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
-    //         if(aliases.length > 0){
-    //             return `${name} (${aliases.join(", ")})`;
-    //         }
-    //     }
-    //     return name;
-    // }).filter(x => x !== null);
-
-    // const commands = Array.from(CommandService.registeredCommands).f
-    //     const name = Array.from(set)[0];
-    //     if(params.flags.aliases){
-    //         const aliases = Array.from(CommandService.commands.entries()).filter(([n, e]) => e.body.aliasOf === name).map(([n, e]) => n);
-    //         if(aliases.length > 0){
-    //             return `${name} (${aliases.join(", ")})`;
-    //         }
-    //     }
-    //     return name;
-    // });
-
     return [
         {
             type: "line",
@@ -392,6 +370,9 @@ class CommandExecService {
 }
 
 class OS {
+
+    commandRunning = false;
+
     constructor(elem){
         this.elem = elem;
         CommandExecService.init(this);
