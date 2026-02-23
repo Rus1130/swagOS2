@@ -19,6 +19,41 @@ class OSError extends Error {
     }
 }
 
+class SaviorService {
+    static os = null;
+    static enabled = false;
+
+    static init(os) {
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("SaviorService_init");
+
+        setInterval(() => {
+            if(!this.enabled) return;
+            if(CommandExecService.enabled == false) {
+                this.os.savior("Enabling CommandExecService to prevent bricking.");
+                DiagnosticService.record("SaviorService_CommandExec");
+                OutputService.clear();
+                CommandExecService.enable();
+                this.os.commandLine();
+            }
+        }, 100);
+    }
+
+    static enable(){
+        if(this.enabled) return;
+        this.enabled = true;
+        DiagnosticService.record("SaviorService_enable");
+    }
+
+    static disable(){
+        if(!this.enabled) return;
+        this.enabled = false;
+        DiagnosticService.record("SaviorService_disable");
+    }
+}
+
 class OutputService {
     static buffer = [];
     static os = null;
@@ -51,7 +86,9 @@ class OutputService {
     static flush() {
         if(!this.enabled) return;
         for(const line of this.buffer){
-            this.os.line(line.content, line.loc);
+            if(line.type === "line") this.os.line(line.content, line.loc);
+            else if(line.type === "error") this.os.error(line.content);
+            else if(line.type === "savior") this.os.savior(line.content);
         }
         DiagnosticService.record("OutputService_flush");
         this.buffer.length = 0;
@@ -183,9 +220,10 @@ class CommandExecService {
                 // silent
             } else if (e instanceof OSError) {
                 DiagnosticService.record("CommandExecService_commandError "+chain.simplify());
-                this.os.error(e.message);
+                OutputService.add({ type: "error", content: e.message });
             } else {
-                this.os.error(`A JavaScript error occurred.`);
+                DiagnosticService.record("CommandExecService_unexpectedError "+chain.simplify());
+                OutputService.add({ type: "error", content: `An unexpected error occurred while executing command: ${e.message}` });
                 console.error(e);
             }
             resolve(null);
@@ -341,24 +379,86 @@ CommandService.defineCommand("service", {
             name: "action",
             description: "The action to perform",
             required: true,
-            options: ["list", "enable", "disable", "data"],
+            options: ["list", "enable", "disable", "log"],
         },
         {
             type: "positional",
             name: "service",
             description: "The service to enable/disable (required for enable/disable action)",
             required: false,
+        },
+        {
+            type: "flag",
+            name: "confirm",
+            description: "Some services are critical for the operation of the OS. Use this flag to confirm that you want to enable/disable such services",
+            required: false,
+            datatype: "boolean",
+        },
+        {
+            type: "flag",
+            name: "clear",
+            short: "c",
+            description: "Clear the log before doing anything.",
+            required: false,
+            datatype: "boolean",
         }
     ]
 }, (params, os, signal) => {
     const action = params.args[0];
-    if(action === "data"){
-        return DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`).map(x => ({ type: "line", content: x, loc: "" }))
+    if(action === "log"){
+        if(params.flags.clear){
+            DiagnosticService.diagnosticData.length = 0;
+        }
+        const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`); //
+
+        const compressed = [];
+        let increment = 0;
+        for(let i = 0; i < uncompressed.length; i++){
+            let lastEntry = compressed[compressed.length - 1];
+            let currentEntry = uncompressed[i];
+            if(lastEntry == undefined) {
+                compressed.push(currentEntry);
+                continue;
+            }
+
+
+            if(currentEntry === lastEntry){
+                increment++;
+            } else {
+                if(increment > 0){
+                    compressed[compressed.length - 1] = `${lastEntry} (x${increment + 1})`;
+                    increment = 0;
+                }
+                compressed.push(currentEntry);
+            }
+        }
+
+        let lastStamp = null;
+        for (let i = 0; i < compressed.length; i++) {
+
+            let line = compressed[i];
+
+            // match the timestamp inside the first [...]
+            let m = line.match(/^\[([^\]]*)\]/);
+            if (!m) continue;
+
+            let stamp = m[1];
+
+            if (stamp === lastStamp) {
+                let blank = " ".repeat(stamp.length);
+                compressed[i] = line.replace(/^\[[^\]]*\]/, `[${blank}]`);
+            } else {
+                lastStamp = stamp;
+            }
+        }
+
+        return compressed.map(x => ({ type: "line", content: x, loc: "" }));
     } else if(action === "list"){
         return [
             { type: "line", content: `OutputService: ${OutputService.enabled ? "enabled" : "disabled"}`, loc: "" },
             { type: "line", content: `CommandExecService: ${CommandExecService.enabled ? "enabled" : "disabled"}`, loc: "" },
             { type: "line", content: `DiagnosticService: ${DiagnosticService.enabled ? "enabled" : "disabled"}`, loc: "" },
+            { type: "line", content: `SaviorService: ${SaviorService.enabled ? "enabled" : "disabled"}`, loc: "" },
         ];
     } else if(action === "enable" || action === "disable"){
         const serviceName = params.args[1];
@@ -368,14 +468,22 @@ CommandService.defineCommand("service", {
             "output": OutputService,
             "commandexec": CommandExecService,
             "diagnostic": DiagnosticService,
+            "savior": SaviorService,
         };
+
+
+        const criticalServices = ["commandexec", "savior"];
+
         const service = serviceMap[serviceName.toLowerCase()];
 
-        if(!service) return { type: "error", content: `Unknown service: "${serviceName}"` };
+        if(!service) return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${Object.keys(serviceMap).join(", ")}` };
         if(action === "enable"){
             service.enable();
             return { type: "line", content: `Enabled ${serviceName} service`, loc: "" };
         } else {
+            if(criticalServices.includes(serviceName.toLowerCase()) && !params.flags.confirm){
+                return { type: "error", content: `The "${serviceName}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
+            }
             service.disable();
             return { type: "line", content: `Disabled ${serviceName} service`, loc: "" };
         }
@@ -752,6 +860,7 @@ class OS {
         DiagnosticService.init(this);
         CommandExecService.init(this);
         OutputService.init(this);
+        SaviorService.init(this);
     }
 
     async runChain(chain, signal) {
@@ -1012,6 +1121,21 @@ class OS {
         this.elem.appendChild(line);
     }
 
+    savior(content){
+        const line = document.createElement('div');
+        const contentElem = document.createElement('div');
+        const locElem = document.createElement('span');
+
+        contentElem.textContent = content;
+        locElem.textContent = "SAVIOR";
+        locElem.classList.add('savior');
+
+        line.classList.add('line');
+        line.appendChild(locElem);
+        line.appendChild(contentElem);
+        this.elem.appendChild(line);
+    }
+
     commandLine(loc = ">"){
         const line = document.createElement('div');
         const contentElem = document.createElement('div');
@@ -1031,6 +1155,10 @@ class OS {
                 this.sendCommand(contentElem.textContent);
                 contentElem.contentEditable = 'false';
             }
+        });
+
+        document.body.addEventListener('click', () => {
+            contentElem.focus();
         });
 
         locElem.textContent = loc;
