@@ -23,6 +23,8 @@ class SaviorService {
     static os = null;
     static enabled = false;
 
+    static name = "SaviorService";
+
     static init(os) {
         if(this.os) return;
         this.os = os;
@@ -32,13 +34,13 @@ class SaviorService {
         setInterval(() => {
             if(!this.enabled) return;
             if(CommandExecService.enabled == false) {
-                this.os.savior("Enabling CommandExecService to prevent bricking.");
-                DiagnosticService.record("SaviorService_CommandExec");
+                this.os.savior("Enabled CommandExecService.");
+                DiagnosticService.record("SaviorService_save CommandExecService");
                 OutputService.clear();
                 CommandExecService.enable();
                 this.os.commandLine();
             }
-        }, 100);
+        }, 5000);
     }
 
     static enable(){
@@ -58,6 +60,8 @@ class OutputService {
     static buffer = [];
     static os = null;
     static enabled = false;
+
+    static name = "OutputService";
 
     static enable(){
         this.enabled = true;
@@ -89,6 +93,7 @@ class OutputService {
             if(line.type === "line") this.os.line(line.content, line.loc);
             else if(line.type === "error") this.os.error(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
+            else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
         }
         DiagnosticService.record("OutputService_flush");
         this.buffer.length = 0;
@@ -109,6 +114,8 @@ class OutputService {
 class DiagnosticService {
     static enabled = false;
     static os = null;
+
+    static name = "DiagnosticService";
 
     static diagnosticData = [];
 
@@ -136,12 +143,13 @@ class DiagnosticService {
     }
 }
 
-
 class CommandExecService {
     static queue = [];
     static running = false;
     static os = null;
     static enabled = false;
+
+    static name = "CommandExecService";
 
     static currentAbort = null;
     static currentReject = null;
@@ -237,11 +245,32 @@ class CommandExecService {
 }
 
 class CommandService {
+    static os = null;
+    static enabled = false;
     static commands = new Map();
     static registeredCommands = new Set();
 
+    static init(os) {
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("CommandService_init");
+    }
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("CommandService_enable");
+    }
+
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("CommandService_disable");
+    }
+
     static defineCommand(name, body, fn){
+        if(!this.enabled) return;
         this.commands.set(name, {body, fn});
+        DiagnosticService.record(`CommandService_define ${name}`);
 
         if(body.options && body.options.alias){
             let aliasBody = structuredClone(body);
@@ -253,16 +282,19 @@ class CommandService {
     }
 
     static getCommand(name){
+        if(!this.enabled) return;
         if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(name)) return null;
         DiagnosticService.record(`CommandService_get ${name}`);
         return this.commands.get(name);
     }
 
     static listCommands(){
+        if(!this.enabled) return;
         return Array.from(CommandService.registeredCommands);
     }
 
     static unregisterCommand(name){
+        if(!this.enabled) return;
         if(!CommandService.registeredCommands.has(name)) return;
         const entry = this.commands.get(name);
         if(!entry) throw new Error(`Cannot unregister unknown command: "${name}"`);
@@ -277,6 +309,7 @@ class CommandService {
     }
 
     static registerCommand(name){
+        if(!this.enabled) return;
         if(CommandService.registeredCommands.has(name)) return;
         const entry = this.commands.get(name);
         if(!entry) throw new Error(`Cannot register unknown command: "${name}"`);
@@ -291,14 +324,14 @@ class CommandService {
     }
 
     static bulkRegister(names){
+        if(!this.enabled) return;
         for(const name of names){
             this.registerCommand(name);
         }
-
-        DiagnosticService.record(`CommandService_bulkRegister ${names.join("_")}`);
     }
 
     static bulkUnregister(names){
+        if(!this.enabled) return;
         for(const name of names){
             this.unregisterCommand(name);
         }
@@ -306,6 +339,7 @@ class CommandService {
     }
 
     static verify(name, args, flags){
+        if(!this.enabled) return;
         const entry = this.commands.get(name);
 
         DiagnosticService.record(`CommandService_verify ${name}`);
@@ -369,369 +403,390 @@ class CommandService {
     }
 }
 
-CommandService.defineCommand("service", {
-    options: {
-        description: "Lists all available services and their status",
-    },
-    schema: [
-        {
-            type: "positional",
-            name: "action",
-            description: "The action to perform",
-            required: true,
-            options: ["list", "enable", "disable", "log"],
+function defineCommands(){
+    CommandService.defineCommand("service", {
+        options: {
+            description: "Lists all available services and their status",
         },
-        {
-            type: "positional",
-            name: "service",
-            description: "The service to enable/disable (required for enable/disable action)",
-            required: false,
-        },
-        {
-            type: "flag",
-            name: "confirm",
-            description: "Some services are critical for the operation of the OS. Use this flag to confirm that you want to enable/disable such services",
-            required: false,
-            datatype: "boolean",
-        },
-        {
-            type: "flag",
-            name: "clear",
-            short: "c",
-            description: "Clear the log before doing anything.",
-            required: false,
-            datatype: "boolean",
-        }
-    ]
-}, (params, os, signal) => {
-    const action = params.args[0];
-    if(action === "log"){
-        if(params.flags.clear){
-            DiagnosticService.diagnosticData.length = 0;
-        }
-        const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`); //
-
-        const compressed = [];
-        let increment = 0;
-        for(let i = 0; i < uncompressed.length; i++){
-            let lastEntry = compressed[compressed.length - 1];
-            let currentEntry = uncompressed[i];
-            if(lastEntry == undefined) {
-                compressed.push(currentEntry);
-                continue;
+        schema: [
+            {
+                type: "positional",
+                name: "action",
+                description: "The action to perform",
+                required: true,
+                options: ["list", "enable", "disable", "logs"],
+            },
+            {
+                type: "positional",
+                name: "service",
+                description: "The service to enable/disable (required for enable/disable action)",
+                required: false,
+            },
+            {
+                type: "flag",
+                name: "confirm",
+                description: "Some services are critical for the operation of the OS. Use this flag to confirm that you want to enable/disable such services",
+                required: false,
+                datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "clear",
+                short: "c",
+                description: "Clear the service logs.",
+                required: false,
+                datatype: "boolean",
             }
+        ]
+    }, (params, os, signal) => {
+        const action = params.args[0];
+        if(action === "logs"){
+            if(params.flags.clear){
+                DiagnosticService.diagnosticData.length = 0;
+            }
+            const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`); //
 
-
-            if(currentEntry === lastEntry){
-                increment++;
-            } else {
-                if(increment > 0){
-                    compressed[compressed.length - 1] = `${lastEntry} (x${increment + 1})`;
-                    increment = 0;
+            const compressed = [];
+            let increment = 0;
+            for(let i = 0; i < uncompressed.length; i++){
+                let lastEntry = compressed[compressed.length - 1];
+                let currentEntry = uncompressed[i];
+                if(lastEntry == undefined) {
+                    compressed.push(currentEntry);
+                    continue;
                 }
-                compressed.push(currentEntry);
+
+
+                if(currentEntry === lastEntry){
+                    increment++;
+                } else {
+                    if(increment > 0){
+                        compressed[compressed.length - 1] = `${lastEntry} (x${increment + 1})`;
+                        increment = 0;
+                    }
+                    compressed.push(currentEntry);
+                }
             }
-        }
 
-        let lastStamp = null;
-        for (let i = 0; i < compressed.length; i++) {
+            let lastStamp = null;
+            for (let i = 0; i < compressed.length; i++) {
 
-            let line = compressed[i];
+                let line = compressed[i];
 
-            // match the timestamp inside the first [...]
-            let m = line.match(/^\[([^\]]*)\]/);
-            if (!m) continue;
+                // match the timestamp inside the first [...]
+                let m = line.match(/^\[([^\]]*)\]/);
+                if (!m) continue;
 
-            let stamp = m[1];
+                let stamp = m[1];
 
-            if (stamp === lastStamp) {
-                let blank = " ".repeat(stamp.length);
-                compressed[i] = line.replace(/^\[[^\]]*\]/, `[${blank}]`);
+                if (stamp === lastStamp) {
+                    let blank = " ".repeat(stamp.length);
+                    compressed[i] = line.replace(/^\[[^\]]*\]/, `[${blank}]`);
+                } else {
+                    lastStamp = stamp;
+                }
+            }
+
+            return compressed.map(x => ({ type: "line", content: x, loc: "" }));
+        } else if(action === "list"){
+
+            const services = [OutputService, CommandExecService, DiagnosticService, SaviorService];
+            const lines = [];
+            const max = Math.max(...services.map(s => s.name.length));
+
+            services.forEach(service => {
+                lines.push({ type: "html", content: `${service.name.padEnd(max, " ")} : ${service.enabled ? "<span class='enabled'>ENABLED</span>" : "<span class='disabled'>DISABLED</span>"}`, loc: "" });
+            });
+
+            return lines;
+
+            return [
+                { type: "line", content: `OutputService: ${OutputService.enabled ? "enabled" : "disabled"}`, loc: "" },
+                { type: "line", content: `CommandExecService: ${CommandExecService.enabled ? "enabled" : "disabled"}`, loc: "" },
+                { type: "line", content: `DiagnosticService: ${DiagnosticService.enabled ? "enabled" : "disabled"}`, loc: "" },
+                { type: "line", content: `SaviorService: ${SaviorService.enabled ? "enabled" : "disabled"}`, loc: "" },
+            ];
+        } else if(action === "enable" || action === "disable"){
+            const serviceName = params.args[1];
+            if(!serviceName) return { type: "error", content: "Service name is required for enable/disable action" };
+
+            const serviceMap = {
+                "output": OutputService,
+                "commandexec": CommandExecService,
+                "diagnostic": DiagnosticService,
+                "savior": SaviorService,
+            };
+
+
+            const criticalServices = ["commandexec", "savior"];
+
+            const service = serviceMap[serviceName.toLowerCase()];
+
+            if(!service) return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${Object.keys(serviceMap).join(", ")}` };
+            if(action === "enable"){
+                service.enable();
+                return { type: "line", content: `Enabled ${serviceName} service`, loc: "" };
             } else {
-                lastStamp = stamp;
+                if(criticalServices.includes(serviceName.toLowerCase()) && !params.flags.confirm){
+                    return { type: "error", content: `The "${serviceName}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
+                }
+                service.disable();
+                return { type: "line", content: `Disabled ${serviceName} service`, loc: "" };
             }
         }
+    });
 
-        return compressed.map(x => ({ type: "line", content: x, loc: "" }));
-    } else if(action === "list"){
-        return [
-            { type: "line", content: `OutputService: ${OutputService.enabled ? "enabled" : "disabled"}`, loc: "" },
-            { type: "line", content: `CommandExecService: ${CommandExecService.enabled ? "enabled" : "disabled"}`, loc: "" },
-            { type: "line", content: `DiagnosticService: ${DiagnosticService.enabled ? "enabled" : "disabled"}`, loc: "" },
-            { type: "line", content: `SaviorService: ${SaviorService.enabled ? "enabled" : "disabled"}`, loc: "" },
-        ];
-    } else if(action === "enable" || action === "disable"){
-        const serviceName = params.args[1];
-        if(!serviceName) return { type: "error", content: "Service name is required for enable/disable action" };
+    CommandService.defineCommand("clear", {
+        options: {
+            description: "Clears the output buffer and the console",
+            alias: "cls"
+        },
+        schema: []
+    }, (params, os, signal) => {
+        OutputService.clear();
+        os.elem.innerHTML = "";
+    })
 
-        const serviceMap = {
-            "output": OutputService,
-            "commandexec": CommandExecService,
-            "diagnostic": DiagnosticService,
-            "savior": SaviorService,
+    CommandService.defineCommand("print", {
+        options: {
+            description: "Prints the provided arguments to the console",
+        },
+        schema: [
+            {
+                name: "text",
+                description: "The text to print",
+                type: "positional",
+                required: true,
+                pipeableFrom: "text",
+            },
+            {
+                name: "loc_text",
+                description: "The text to show in the location part of the line",
+                type: "positional",
+                short: "l",
+                datatype: "string"
+            }
+        ]
+    }, ({args, flags, pipe}, os, signal) => {
+        const text = args[0];
+        const loc = args[1] || "";
+
+        return {
+            type: "line",
+            content: text,
+            loc: loc
         };
+    });
 
-
-        const criticalServices = ["commandexec", "savior"];
-
-        const service = serviceMap[serviceName.toLowerCase()];
-
-        if(!service) return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${Object.keys(serviceMap).join(", ")}` };
-        if(action === "enable"){
-            service.enable();
-            return { type: "line", content: `Enabled ${serviceName} service`, loc: "" };
-        } else {
-            if(criticalServices.includes(serviceName.toLowerCase()) && !params.flags.confirm){
-                return { type: "error", content: `The "${serviceName}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
-            }
-            service.disable();
-            return { type: "line", content: `Disabled ${serviceName} service`, loc: "" };
-        }
-    }
-});
-
-
-CommandService.defineCommand("clear", {
-    options: {
-        description: "Clears the output buffer and the console",
-        alias: "cls"
-    },
-    schema: []
-}, (params, os, signal) => {
-    OutputService.clear();
-    os.elem.innerHTML = "";
-})
-
-CommandService.defineCommand("print", {
-    options: {
-        description: "Prints the provided arguments to the console",
-    },
-    schema: [
-        {
-            name: "text",
-            description: "The text to print",
-            type: "positional",
-            required: true,
-            pipeableFrom: "text",
+    CommandService.defineCommand("obuffer", {
+        options: {
+            description: "Outputs the current output buffer",
+            hidden: true
         },
-        {
-            name: "loc_text",
-            description: "The text to show in the location part of the line",
-            type: "positional",
-            short: "l",
-            datatype: "string"
-        }
-    ]
-}, ({args, flags, pipe}, os, signal) => {
-    const text = args[0];
-    const loc = args[1] || "";
+        schema: []
+    }, (params, os, signal) => {
+        OutputService.flush();
+    });
 
-    return {
-        type: "line",
-        content: text,
-        loc: loc
-    };
-});
-
-CommandService.defineCommand("obuffer", {
-    options: {
-        description: "Outputs the current output buffer",
-        hidden: true
-    },
-    schema: []
-}, (params, os, signal) => {
-    OutputService.flush();
-});
-
-CommandService.defineCommand("commandline", {
-    options: {
-        description: "Outputs a new command line for input",
-        hidden: true
-    },
-    schema: []
-}, (params, os, signal) => {
-    if(!os.commandRunning) os.commandLine();
-});
-
-CommandService.defineCommand("linecount", {
-    options: {
-        description: "Outputs the number of lines",
-        alias: "lc"
-    },
-    schema: []
-}, (params, os, signal) => {
-    if(params.pipe) return {
-        type: "line",
-        content: params.pipe.length,
-        loc: ""
-    }
-    else return {
-        type: "line",
-        content: Array.from(os.elem.children).filter(child => child.classList.contains('line')).length - 1,
-        loc: ""
-    }
-});
-
-CommandService.defineCommand("help", {
-    options: {
-        description: "Lists all available commands. To get help with a specific command, use \"help commandname\"",
-        alias: "?"
-    },
-    schema: [
-        {
-            type: "flag",
-            name: "aliases",
-            short: "a",
-            description: "Show command aliases in list",
-            datatype: "boolean",
+    CommandService.defineCommand("commandline", {
+        options: {
+            description: "Outputs a new command line for input",
+            hidden: true
         },
-        {
-            type: "positional",
-            name: "command",
-            description: "The command to get help for",
-            required: false,
+        schema: []
+    }, (params, os, signal) => {
+        if(!os.commandRunning) os.commandLine();
+    });
+
+    CommandService.defineCommand("linecount", {
+        options: {
+            description: "Outputs the number of lines",
+            alias: "lc"
         },
-        {
-            type: "flag",
-            name: "verbose",
-            short: "v",
-            description: "Show detailed help information for each command",
-            datatype: "boolean",
+        schema: []
+    }, (params, os, signal) => {
+        if(params.pipe) return {
+            type: "line",
+            content: params.pipe.length,
+            loc: ""
         }
-    ]
-}, ({flags, args}, os, signal) => {
-    const commandName = args[0];
+        else return {
+            type: "line",
+            content: Array.from(os.elem.children).filter(child => child.classList.contains('line')).length - 1,
+            loc: ""
+        }
+    });
 
-    if (commandName) {
-
-        const entry = CommandService.getCommand(commandName);
-        if (!entry) throw new OSError(`Unknown command: "${commandName}"`);
-
-        let name = entry.body.aliasOf ?? commandName;
-
-        const schema = entry.body.schema || [];
-        const positionalArgs = schema.filter(s => s.type === "positional");
-        const flagArgs = schema.filter(s => s.type === "flag" || s.type === "option");
-
-        if (flags.verbose) {
-
-            let usage = `Usage: ${name}`;
-            let descriptions = [];
-
-            for (const param of positionalArgs) {
-                usage += param.required
-                    ? ` <${param.name}>`
-                    : ` [${param.name}]`;
+    CommandService.defineCommand("help", {
+        options: {
+            description: "Lists all available commands. To get help with a specific command, use \"help commandname\"",
+            alias: "?"
+        },
+        schema: [
+            {
+                type: "flag",
+                name: "aliases",
+                short: "a",
+                description: "Show command aliases in list",
+                datatype: "boolean",
+            },
+            {
+                type: "positional",
+                name: "command",
+                description: "The command to get help for",
+                required: false,
+            },
+            {
+                type: "flag",
+                name: "verbose",
+                short: "v",
+                description: "Show detailed help information for each command",
+                datatype: "boolean",
             }
+        ]
+    }, ({flags, args}, os, signal) => {
+        const commandName = args[0];
 
-            if (entry.body.aliasOf) {
-                descriptions.push({ type: "line", content: `Alias of: ${entry.body.aliasOf}`, loc: "" });
-            } else if (entry.body.options.alias) {
-                descriptions.push({ type: "line", content: `Alias: ${entry.body.options.alias}`, loc: "" });
-            }
+        if (commandName) {
 
-            for (const param of flagArgs) {
-                const flagPart = `-${param.short}|--${param.name}`;
-                usage += param.required
-                    ? ` ${flagPart}=<${param.datatype}>`
-                    : ` [${flagPart}=<${param.datatype}>]`;
-            }
+            const entry = CommandService.getCommand(commandName);
+            if (!entry) throw new OSError(`Unknown command: "${commandName}"`);
 
-            descriptions.push({ type: "line", content: "", loc: "" });
+            let name = entry.body.aliasOf ?? commandName;
 
-            for (const param of positionalArgs) {
-                descriptions.push({ type: "line", content: `${param.name}: ${param.description || "No description available"}`, loc: "" });
-                descriptions.push({ type: "line", content: `    Type: positional`, loc: "" });
-                descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
+            const schema = entry.body.schema || [];
+            const positionalArgs = schema.filter(s => s.type === "positional");
+            const flagArgs = schema.filter(s => s.type === "flag" || s.type === "option");
 
-                if (param.options) {
-                    descriptions.push({ type: "line", content: `    Options: ${param.options.join(", ")}`, loc: "" });
+            if (flags.verbose) {
+
+                let usage = `Usage: ${name}`;
+                let descriptions = [];
+
+                for (const param of positionalArgs) {
+                    usage += param.required
+                        ? ` <${param.name}>`
+                        : ` [${param.name}]`;
+                }
+
+                if (entry.body.aliasOf) {
+                    descriptions.push({ type: "line", content: `Alias of: ${entry.body.aliasOf}`, loc: "" });
+                } else if (entry.body.options.alias) {
+                    descriptions.push({ type: "line", content: `Alias: ${entry.body.options.alias}`, loc: "" });
+                }
+
+                for (const param of flagArgs) {
+                    let flagPart = '';
+
+                    if (param.short) flagPart += `-${param.short}`;
+                    if (param.short && param.name) flagPart += "|";
+                    if (param.name) flagPart += `--${param.name}`;
+
+                    usage += param.required
+                        ? ` ${flagPart}=<${param.datatype}>`
+                        : ` [${flagPart}=<${param.datatype}>]`;
                 }
 
                 descriptions.push({ type: "line", content: "", loc: "" });
-            }
 
-            for (const param of flagArgs) {
-                const flagPart = `-${param.short}|--${param.name}`;
-                descriptions.push({ type: "line", content: `${flagPart}: ${param.description || "No description available"}`, loc: "" });
-                descriptions.push({ type: "line", content: `    Type: ${param.type}`, loc: "" });
-                descriptions.push({ type: "line", content: `    Datatype: ${param.datatype}`, loc: "" });
-                descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
-                descriptions.push({ type: "line", content: "", loc: "" });
-            }
+                for (const param of positionalArgs) {
+                    descriptions.push({ type: "line", content: `${param.name}: ${param.description || "No description available"}`, loc: "" });
+                    descriptions.push({ type: "line", content: `    Type: positional`, loc: "" });
+                    descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
 
-            return [
-                { type: "line", content: usage, loc: "" },
-                { type: "line", content: entry.body.options.description || "No description available", loc: "" },
-                ...descriptions
-            ];
+                    if (param.options) {
+                        descriptions.push({ type: "line", content: `    Options: ${param.options.join(", ")}`, loc: "" });
+                    }
 
-        } else {
-
-            let usage = `Usage: ${name}`;
-
-            for (const param of positionalArgs) {
-                usage += param.required
-                    ? ` <${param.name}>`
-                    : ` [${param.name}]`;
-            }
-
-            for (const param of flagArgs) {
-                const flagPart = param.short ? `-${param.short}` : `--${param.name}`;
-                usage += param.required
-                    ? ` ${flagPart}`
-                    : ` [${flagPart}]`;
-            }
-
-            return [
-                { type: "line", content: usage, loc: "" },
-                { type: "line", content: entry.body.options.description || "No description available", loc: "" }
-            ];
-        }
-    }
-
-    const entries = [];
-
-    // flatten once and resolve once
-    for (const nameSet of CommandService.registeredCommands) {
-        for (const name of nameSet) {
-
-            const entry = CommandService.getCommand(name);
-            if (!entry) continue;
-
-            entries.push({ name, entry });
-        }
-    }
-
-    const commands = entries
-        .filter(({ entry }) => !entry.body.aliasOf)
-        .filter(({ entry }) => !entry.body.options.hidden)
-        .map(({ name }) => {
-
-            if (flags.aliases) {
-                const aliases = [];
-
-                for (const [n, e] of CommandService.commands) {
-                    if (e.body.aliasOf === name) aliases.push(n);
+                    descriptions.push({ type: "line", content: "", loc: "" });
                 }
 
-                if (aliases.length) {
-                    return `${name} (${aliases.join(", ")})`;
+                for (const param of flagArgs) {
+                    let flagPart = '';
+
+                    if (param.short) flagPart += `-${param.short}`;
+                    if (param.short && param.name) flagPart += "|";
+                    if (param.name) flagPart += `--${param.name}`;
+
+                    descriptions.push({ type: "line", content: `${flagPart}: ${param.description || "No description available"}`, loc: "" });
+                    descriptions.push({ type: "line", content: `    Type: ${param.type}`, loc: "" });
+                    descriptions.push({ type: "line", content: `    Datatype: ${param.datatype}`, loc: "" });
+                    descriptions.push({ type: "line", content: `    Required: ${param.required ? "Yes" : "No"}`, loc: "" });
+                    descriptions.push({ type: "line", content: "", loc: "" });
                 }
+
+                return [
+                    { type: "line", content: usage, loc: "" },
+                    { type: "line", content: entry.body.options.description || "No description available", loc: "" },
+                    ...descriptions
+                ];
+
+            } else {
+
+                let usage = `Usage: ${name}`;
+
+                for (const param of positionalArgs) {
+                    usage += param.required
+                        ? ` <${param.name}>`
+                        : ` [${param.name}]`;
+                }
+
+                for (const param of flagArgs) {
+                    const flagPart = param.short ? `-${param.short}` : `--${param.name}`;
+                    usage += param.required
+                        ? ` ${flagPart}`
+                        : ` [${flagPart}]`;
+                }
+
+                return [
+                    { type: "line", content: usage, loc: "" },
+                    { type: "line", content: entry.body.options.description || "No description available", loc: "" }
+                ];
             }
+        }
 
-            return name;
-        })
-        .sort((a, b) => a.localeCompare(b));
+        const entries = [];
 
-    return [
-        { type: "line", content: "Available commands:", loc: "" },
-        { type: "line", content: commands.join(", "), loc: "" }
-    ];
-});
+        // flatten once and resolve once
+        for (const nameSet of CommandService.registeredCommands) {
+            for (const name of nameSet) {
 
+                const entry = CommandService.getCommand(name);
+                if (!entry) continue;
 
-CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service"]);
+                entries.push({ name, entry });
+            }
+        }
+
+        const commands = entries
+            .filter(({ entry }) => !entry.body.aliasOf)
+            .filter(({ entry }) => !entry.body.options.hidden)
+            .map(({ name }) => {
+
+                if (flags.aliases) {
+                    const aliases = [];
+
+                    for (const [n, e] of CommandService.commands) {
+                        if (e.body.aliasOf === name) aliases.push(n);
+                    }
+
+                    if (aliases.length) {
+                        return `${name} (${aliases.join(", ")})`;
+                    }
+                }
+
+                return name;
+            })
+            .sort((a, b) => a.localeCompare(b));
+
+        return [
+            { type: "line", content: "Available commands:", loc: "" },
+            { type: "line", content: commands.join(", "), loc: "" }
+        ];
+    });
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service"]);
+}
 
 class OS {
     commandRunning = false;
@@ -858,9 +913,76 @@ class OS {
     constructor(elem){
         this.elem = elem;
         DiagnosticService.init(this);
+        CommandService.init(this);
+        defineCommands();
         CommandExecService.init(this);
         OutputService.init(this);
         SaviorService.init(this);
+
+        function getRealColors(el) {
+            let current = el;
+            let bg = null;
+            let fg = null;
+
+            while (current && current !== document.documentElement) {
+                const cs = getComputedStyle(current);
+
+                // Only set bg if we haven't found a real one yet
+                if (!bg) {
+                    const cBg = cs.backgroundColor;
+                    if (cBg !== "transparent" && cBg !== "rgba(0, 0, 0, 0)") {
+                        bg = cBg;
+                    }
+                }
+
+                // Only set fg if we haven't found one yet
+                if (!fg) {
+                    const cFg = cs.color;
+                    if (cFg !== "inherit") {
+                        fg = cFg;
+                    }
+                }
+
+                // If we found both, stop early
+                if (bg && fg) break;
+
+                current = current.parentElement;
+            }
+
+            // fallback to body values
+            const bodyCS = getComputedStyle(document.body);
+
+            return {
+                bg: bg || bodyCS.backgroundColor,
+                fg: fg || bodyCS.color
+            };
+        }
+
+        const style = document.createElement("style");
+        style.id = "dynamic-selection-style";
+        document.head.appendChild(style);
+
+        document.addEventListener("selectionchange", (e) => {
+            const sel = document.getSelection();
+            if (!sel.rangeCount) return;
+
+            const anchorNode = sel.anchorNode;
+
+            if (!anchorNode) return;
+
+            const node = anchorNode.nodeType === 3
+                ? anchorNode.parentElement
+                : anchorNode;
+
+            const real = getRealColors(node);
+
+            style.textContent = `
+            ::selection {
+                background-color: ${real.fg} !important;
+                color: ${real.bg} !important;
+            }
+            `;        
+        });
     }
 
     async runChain(chain, signal) {
@@ -1121,6 +1243,20 @@ class OS {
         this.elem.appendChild(line);
     }
 
+    htmlLine(content, loc = ""){
+        const line = document.createElement('div');
+        const contentElem = document.createElement('div');
+        const locElem = document.createElement('span');
+
+        contentElem.innerHTML = content;
+        locElem.innerHTML = loc;
+
+        line.classList.add('line');
+        line.appendChild(locElem);
+        line.appendChild(contentElem);
+        this.elem.appendChild(line);
+    }
+
     savior(content){
         const line = document.createElement('div');
         const contentElem = document.createElement('div');
@@ -1150,6 +1286,10 @@ class OS {
         contentElem.classList.add('commandline');
 
         contentElem.addEventListener('keydown', (e) => {
+            if(e.key === "Enter"  && contentElem.textContent.trim() === "") {
+                e.preventDefault();
+                return;
+            }
             if(e.key === 'Enter'){
                 e.preventDefault();
                 this.sendCommand(contentElem.textContent);
