@@ -25,22 +25,27 @@ class SaviorService {
 
     static name = "SaviorService";
 
+    static watch(service){
+        setInterval(() => {
+            if(!this.enabled) return;
+            if(service.enabled == false){
+                this.os.savior(`Enabled ${service.name}`);
+                DiagnosticService.record(`SaviorService_save ${service.name}`);
+                OutputService.clear();
+                service.enable();
+                this.os.commandLine();
+            }
+        }, 5000);
+    }
+
     static init(os) {
         if(this.os) return;
         this.os = os;
         this.enabled = true;
         DiagnosticService.record("SaviorService_init");
 
-        setInterval(() => {
-            if(!this.enabled) return;
-            if(CommandExecService.enabled == false) {
-                this.os.savior("Enabled CommandExecService.");
-                DiagnosticService.record("SaviorService_save CommandExecService");
-                OutputService.clear();
-                CommandExecService.enable();
-                this.os.commandLine();
-            }
-        }, 5000);
+        SaviorService.watch(CommandExecService);
+        SaviorService.watch(CommandService);
     }
 
     static enable(){
@@ -225,7 +230,7 @@ class CommandExecService {
             resolve(result);
         } catch (e) {
             if (e.name === "AbortError") {
-                // silent
+                console.log(e)
             } else if (e instanceof OSError) {
                 DiagnosticService.record("CommandExecService_commandError "+chain.simplify());
                 OutputService.add({ type: "error", content: e.message });
@@ -249,6 +254,8 @@ class CommandService {
     static enabled = false;
     static commands = new Map();
     static registeredCommands = new Set();
+
+    static name = "CommandService";
 
     static init(os) {
         if(this.os) return;
@@ -281,6 +288,13 @@ class CommandService {
         }
     }
 
+    static reloadCommands(){
+        this.registeredCommands = new Set();
+        this.commands = new Map();
+        defineCommands();
+        this.os.validateAllCommands();
+    }
+
     static getCommand(name){
         if(!this.enabled) return;
         if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(name)) return null;
@@ -295,17 +309,17 @@ class CommandService {
 
     static unregisterCommand(name){
         if(!this.enabled) return;
-        if(!CommandService.registeredCommands.has(name)) return;
+        if(!Array.from(CommandService.registeredCommands).map(x => Array.from(x)).flat().includes(name)) return;
         const entry = this.commands.get(name);
         if(!entry) throw new Error(`Cannot unregister unknown command: "${name}"`);
 
-        const commandNames = new Set();
+        const commandNames = [];
 
-        commandNames.add(name);
-        if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
+        commandNames.push(name);
+        if(entry.body.options.alias) commandNames.push(entry.body.options.alias);
 
         DiagnosticService.record(`CommandService_unregister ${name}`);
-        CommandService.registeredCommands.delete(commandNames);
+        commandNames.forEach(n => this.registeredCommands.forEach(set => set.delete(n)));
     }
 
     static registerCommand(name){
@@ -321,6 +335,24 @@ class CommandService {
 
         DiagnosticService.record(`CommandService_register ${name}`);
         CommandService.registeredCommands.add(commandNames);
+    }
+
+    static validateCommand(name){
+        if(!this.enabled) return;
+        if(!this.commands.has(name)) throw new Error(`Cannot validate unknown command: "${name}"`);
+
+        const entry = this.commands.get(name);
+
+        DiagnosticService.record(`CommandService_validate ${name}`);
+
+        entry.body.schema.forEach(param => {
+            if(param.type === "flag"){
+                if(param.datatype === undefined || !["boolean", "string", "number"].includes(param.datatype)){
+                    CommandService.unregisterCommand(name);
+                    this.os.error(`Invalid schema for command "${name}": Flag "${param.name}" has invalid or missing datatype (must be "boolean", "string", or "number")`);
+                }
+            }
+        });
     }
 
     static bulkRegister(names){
@@ -489,7 +521,7 @@ function defineCommands(){
             return compressed.map(x => ({ type: "line", content: x, loc: "" }));
         } else if(action === "list"){
 
-            const services = [OutputService, CommandExecService, DiagnosticService, SaviorService];
+            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService];
             const lines = [];
             const max = Math.max(...services.map(s => s.name.length));
 
@@ -499,12 +531,6 @@ function defineCommands(){
 
             return lines;
 
-            return [
-                { type: "line", content: `OutputService: ${OutputService.enabled ? "enabled" : "disabled"}`, loc: "" },
-                { type: "line", content: `CommandExecService: ${CommandExecService.enabled ? "enabled" : "disabled"}`, loc: "" },
-                { type: "line", content: `DiagnosticService: ${DiagnosticService.enabled ? "enabled" : "disabled"}`, loc: "" },
-                { type: "line", content: `SaviorService: ${SaviorService.enabled ? "enabled" : "disabled"}`, loc: "" },
-            ];
         } else if(action === "enable" || action === "disable"){
             const serviceName = params.args[1];
             if(!serviceName) return { type: "error", content: "Service name is required for enable/disable action" };
@@ -512,12 +538,13 @@ function defineCommands(){
             const serviceMap = {
                 "output": OutputService,
                 "commandexec": CommandExecService,
+                "command": CommandService,
                 "diagnostic": DiagnosticService,
                 "savior": SaviorService,
             };
 
 
-            const criticalServices = ["commandexec", "savior"];
+            const criticalServices = ["commandexec", "savior", "command"];
 
             const service = serviceMap[serviceName.toLowerCase()];
 
@@ -909,11 +936,18 @@ class OS {
         return dateString;
     }
 
+    validateCommands(){
+        CommandService.listCommands().forEach(name => {
+            CommandService.validateCommand(Array.from(name)[0]);
+        });
+    }
+
     constructor(elem){
         this.elem = elem;
         DiagnosticService.init(this);
         CommandService.init(this);
         defineCommands();
+        this.validateCommands();
         CommandExecService.init(this);
         OutputService.init(this);
         SaviorService.init(this);
@@ -1012,6 +1046,12 @@ class OS {
     }
 
     async runSingle(fragment, signal, pipe = null) {
+        const verification = CommandService.verify(fragment.name, fragment.args, fragment.flags);
+
+        if(verification == undefined){
+            throw new OSError(`CommandService is disabled.`);
+        }
+
         if (signal.aborted) {
             DiagnosticService.record("OS_runSingle_aborted");
             throw new DOMException("Aborted", "AbortError");
@@ -1021,7 +1061,7 @@ class OS {
             throw new OSError(`Unknown command: "${fragment.name}"`);
         }
 
-        const { valid, error } = CommandService.verify(fragment.name, fragment.args, fragment.flags);
+        const { valid, error } = verification;
         if (!valid) {
             throw new OSError(error);
         }

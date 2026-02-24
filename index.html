@@ -9,8 +9,6 @@
     .line {
         cursor: default;
         display: flex;
-        white-space: pre;
-        height: 12px;
         padding-bottom: 0.8px;
     }
 
@@ -34,9 +32,10 @@
     .line div {
         background-color: black;
         color: white;
-        word-break: break-all;
+        white-space: pre-wrap;
         overflow-wrap: anywhere;
         width: 100%;
+        min-width: 0;
     }
 
     div[contenteditable] {
