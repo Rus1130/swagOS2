@@ -335,7 +335,6 @@ class CommandService {
         for(const name of names){
             this.unregisterCommand(name);
         }
-        DiagnosticService.record(`CommandService_bulkUnregister ${names.join("_")}`);
     }
 
     static verify(name, args, flags){
