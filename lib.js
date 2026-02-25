@@ -478,7 +478,7 @@ function defineCommands(){
             if(params.flags.clear){
                 DiagnosticService.diagnosticData.length = 0;
             }
-            const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l z', entry.timestamp)}] ${entry.action}`); //
+            const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l', entry.timestamp)}] ${entry.action}`); //
 
             const compressed = [];
             let increment = 0;
