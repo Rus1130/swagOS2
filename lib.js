@@ -126,9 +126,11 @@ class DiagnosticService {
 
     static enable(){
         this.enabled = true;
+        DiagnosticService.record("DiagnosticService_enable");
     }
 
     static disable(){
+        DiagnosticService.record("DiagnosticService_disable");
         this.enabled = false;
     }
 
@@ -136,6 +138,7 @@ class DiagnosticService {
         if(this.os) return;
         this.os = os;
         this.enabled = true;
+        DiagnosticService.record("DiagnosticService_init");
     }
 
     static record(action){
