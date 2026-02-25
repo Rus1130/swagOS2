@@ -820,7 +820,107 @@ function defineCommands(){
         ];
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service"]);
+    CommandService.defineCommand("findtext", {
+        options: {
+            description: "Find text",
+            alias: "find"
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "text",
+                description: "The text to find",
+                required: true,
+                pipeableFrom: "text",
+            },
+            {
+                type: "flag",
+                name: "ignorecase",
+                short: "i",
+                description: "Ignore case when searching",
+                required: false,
+                datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "regex",
+                short: "r",
+                description: "Treat the search text as a regular expression",
+                required: false,
+                datatype: "boolean",
+            }
+        ]
+    }, ({args, pipe, flags}, os, signal) => {
+        let input = null;
+
+        if(pipe) input = pipe;
+        else {
+            input = [];
+            const lines = Array.from(os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
+            lines.forEach((line, i) => {
+                input.push({
+                    type: "line",
+                    content: line[1].textContent,
+                    loc: line[0].textContent
+                })
+            })
+        }
+
+        const searchText = args[0];
+        const ignoreCase = flags.ignorecase || false;
+        const isRegex = flags.regex || false;
+
+        let regex;
+
+        if (isRegex) {
+            try {
+                regex = new RegExp(searchText, ignoreCase ? "gi" : "g");
+            } catch (e) {
+                return { type: "error", content: `Invalid regular expression: ${e.message}` };
+            }
+        } else {
+            const escaped = searchText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            regex = new RegExp(escaped, ignoreCase ? "gi" : "g");
+        }
+
+        const result = [];
+
+        for (let line of input) {
+            const text = line.content;
+
+            let matches = [...text.matchAll(regex)];
+            if (matches.length === 0) continue;
+
+            let out = "";
+            let last = 0;
+
+            for (let m of matches) {
+                const start = m.index;
+                const end = start + m[0].length;
+
+                out += text.slice(last, start);
+                out += `<span class="highlight">${m[0]}</span>`;
+
+                last = end;
+            }
+
+            out += text.slice(last);
+
+            result.push({
+                type: "html",
+                content: out,
+                loc: ""
+            });
+        }
+
+        if(result.length === 0){
+            return { type: "error", content: "No matches found", loc: "" };
+        }
+
+        return result;
+    });
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext"]);
 }
 
 class OS {
