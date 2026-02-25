@@ -175,17 +175,11 @@ class CommandExecService {
         if(!this.enabled) return;
         if (!this.os) return;
 
-        this.queue.length = 0;
-
+        this.queue = [];
         DiagnosticService.record("CommandExecService_interrupt");
 
         if (this.currentAbort) {
             this.currentAbort.abort();
-        }
-
-        if (this.currentReject) {
-            this.currentReject(err);
-            this.currentReject = null;
         }
     }
 
@@ -229,22 +223,28 @@ class CommandExecService {
             }
             resolve(result);
         } catch (e) {
-            if (e.name === "AbortError") {
-                console.log(e)
+            if (e instanceof DOMException && e.name === "AbortError") {
+                OutputService.add({ type: "error", content: "Command execution interrupted." });
+                OutputService.flush();
+                resolve(null);
             } else if (e instanceof OSError) {
-                DiagnosticService.record("CommandExecService_commandError "+chain.simplify());
+                DiagnosticService.record("CommandExecService_commandError " + chain.simplify());
                 OutputService.add({ type: "error", content: e.message });
+                resolve(null);
             } else {
-                DiagnosticService.record("CommandExecService_unexpectedError "+chain.simplify());
-                OutputService.add({ type: "error", content: `An unexpected error occurred while executing command: ${e.message}` });
-                console.error(e);
+                DiagnosticService.record("CommandExecService_unexpectedError " + chain.simplify());
+                OutputService.add({ type: "error", content: `An unexpected error occurred. Check console for details.` });
+                console.error(e)
+                resolve(null);
             }
-            resolve(null);
         } finally {
             this.currentAbort = null;
             this.currentReject = null;
             this.running = false;
-            this.runNext();
+            // Only continue the queue if we weren't interrupted
+            if (!controller.signal.aborted) {
+                this.runNext();
+            }
         }
     }
 }
@@ -517,6 +517,15 @@ function defineCommands(){
                     lastStamp = stamp;
                 }
             }
+
+            return compressed.map(x => {
+                const m = x.match(/^\[([^\]]*)\] (.*)$/s);
+                if (!m) return { type: "line", content: x, loc: "" };
+                return { type: "line", content: m[2], loc: "["+m[1]+"]" };
+            });
+
+            // split the timestamp and the rest of the line and put the timestamp in the loc part of the line
+
 
             return compressed.map(x => ({ type: "line", content: x, loc: "" }));
         } else if(action === "list"){
