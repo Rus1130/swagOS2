@@ -21,10 +21,10 @@ class OSError extends Error {
 
 class OSFile {
     #content = [];
-    constructor(name, type, parentFid, content = []) {
+    constructor(name, type, parent, content = []) {
         this.name = name;
         this.type = type;
-        this.parentFid = parentFid;
+        this.parent = parent; // parent directory
         this.#content = content;
     }
 
@@ -37,115 +37,124 @@ class OSFile {
     }
 }
 
+class OSDirectory {
+    constructor(name, parent = null) {
+        this.name = name;
+        this.parent = parent;
+        this.children = new Map(); // name -> OSFile or OSDirectory
+    }
+}
+
 class FilesystemService {
-    static os = null;
     static enabled = false;
+    static root = null;
+    static currentDirectory = null;
+    static workingDirectory = "/";
 
-    static name = "FilesystemService";
-
-    static files = new Map();       // fid -> OSFile
-    static directories = new Map(); // fid -> { name, parentFid, children: Map(name -> fid) }
-
-    static nextFid = 1;
-    static currentDirectory = null; // fid
-
-    static init(os) {
-        if (this.os) return;
-
-        this.os = os;
+    static init() {
+        if (this.root) return;
+        this.root = new OSDirectory("root");
+        this.currentDirectory = this.root;
         this.enabled = true;
-
-        // Create root directory
-        const rootFid = this.nextFid++;
-        this.directories.set(rootFid, { name: "", parentFid: null, children: new Map() });
-        this.currentDirectory = rootFid;
-
         DiagnosticService.record("FilesystemService_init");
     }
 
     static enable() {
+        if (this.enabled) return;
         this.enabled = true;
         DiagnosticService.record("FilesystemService_enable");
     }
 
     static disable() {
+        if (!this.enabled) return;
         this.enabled = false;
         DiagnosticService.record("FilesystemService_disable");
     }
 
-    static getFile(fid) {
-        if (!this.enabled) return null;
-        return this.files.get(fid) || null;
-    }
-
-    static getDirectory(fid) {
-        if (!this.enabled) return null;
-        return this.directories.get(fid) || null;
-    }
-
-    static createDirectory(path, name) {
-        if (!this.enabled) return null;
-
-        const parentFid = this.resolvePath(path);
-        if (parentFid === null || !this.directories.has(parentFid)) return null;
-
-        const fid = this.nextFid++;
-        this.directories.set(fid, { name, parentFid, children: new Map() });
-        this.directories.get(parentFid).children.set(name, fid);
-
-        return fid;
-    }
-
-    // --- Now supports paths ---
-    static createFile(path, type, content = []) {
-        if (!this.enabled) return null;
-
-        // Split path into directory + filename
-        const parts = path.split("/").filter(p => p.length > 0);
-        if (parts.length === 0) return null;
-
-        const filename = parts.pop();                  // last part is the file name
-        const dirPath = (path.startsWith("/") ? "/" : "") + parts.join("/"); 
-        const parentFid = parts.length > 0 ? this.resolvePath(dirPath) : this.currentDirectory;
-
-        if (parentFid === null || !this.directories.has(parentFid)) return null;
-
-        const fid = this.nextFid++;
-        const file = new OSFile(filename, type, parentFid, content);
-        this.files.set(fid, file);
-        this.directories.get(parentFid).children.set(filename, fid);
-
-        return fid;
-    }
-
     static resolvePath(path) {
-        if (!this.enabled) return null;
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
         const parts = path.split("/").filter(p => p.length > 0);
-        let fid = path.startsWith("/") ? 1 : this.currentDirectory; // root fid is 1
+        let node = path.startsWith("/") ? this.root : this.currentDirectory;
 
         for (const part of parts) {
             if (part === ".") continue;
             if (part === "..") {
-                const dir = this.directories.get(fid);
-                fid = dir?.parentFid ?? fid;
+                node = node.parent ?? node;
+            } else if (node instanceof OSDirectory && node.children.has(part)) {
+                node = node.children.get(part);
             } else {
-                const dir = this.directories.get(fid);
-                if (!dir || !dir.children.has(part)) return null;
-                fid = dir.children.get(part);
+                return null;
             }
         }
-        return fid;
+
+        DiagnosticService.record(`FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`);
+
+        return node;
+    }
+
+    static validationRegex = /^[a-zA-Z0-9_\-\.]+$/;
+
+    static createDirectory(name, parentPath) {
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        if (!this.validationRegex.test(name)) {
+            throw new OSError(`Invalid directory name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        }
+
+        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
+        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
+
+        if (parentDir.children.has(name)) {
+            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
+        }
+
+        const dir = new OSDirectory(name, parentDir);
+        parentDir.children.set(name, dir);
+        DiagnosticService.record(`FilesystemService_createDirectory ${name} -> ${parentDir.name}`);
+
+        return dir;
+    }
+
+    static createFile(name, type, parentPath, content = []) {
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        if (!this.validationRegex.test(name)) {
+            throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        }
+
+        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
+        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
+
+        const file = new OSFile(name, type, parentDir, content);
+
+        if (parentDir.children.has(name)) {
+            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
+        }
+
+        parentDir.children.set(name, file);
+        DiagnosticService.record(`FilesystemService_createFile ${name} -> ${parentDir.name}`);
+        return file;
+    }
+
+    static setWorkingDirectory(path) {
+        if(!this.enabled) throw new OSError("FilesystemService is disabled");
+        const dir = this.resolvePath(path);
+        if (!dir || !(dir instanceof OSDirectory)) return false;
+
+        this.currentDirectory = dir;
+        this.workingDirectory = this.getCurrentPath();
+        return true;
     }
 
     static getCurrentPath() {
+        if(!this.enabled) return "?";
         let path = [];
-        let fid = this.currentDirectory;
+        let node = this.currentDirectory;
 
-        while (fid && fid !== 1) {
-            const dir = this.directories.get(fid);
-            path.unshift(dir.name);
-            fid = dir.parentFid;
+        while (node && node.parent) {
+            path.unshift(node.name);
+            node = node.parent;
         }
 
         return "/" + path.join("/");
@@ -170,7 +179,6 @@ class SaviorService {
             }
         }, 5000);
     }
-
     static init(os) {
         if(this.os) return;
         this.os = os;
@@ -179,6 +187,17 @@ class SaviorService {
 
         SaviorService.watch(CommandExecService);
         SaviorService.watch(CommandService);
+
+        setInterval(() => {
+            if(!this.enabled) return;
+
+            // get the last line in the console
+            const lines = Array.from(this.os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
+            const lastLine = lines[lines.length - 1];
+            if(lastLine && !lastLine[1].classList.contains("commandline")){
+                this.os.commandLine();
+            }
+        }, 10_000);
     }
 
     static enable(){
@@ -311,8 +330,9 @@ class CommandExecService {
         if(!this.enabled) return;
         if (!this.os) return;
 
-        this.queue = [];
         DiagnosticService.record("CommandExecService_interrupt");
+        this.queue = [];
+        OutputService.buffer.length = 0;
 
         if (this.currentAbort) {
             this.currentAbort.abort();
@@ -357,6 +377,7 @@ class CommandExecService {
             if(CommandExecService.delay > 0){
                 await new Promise(r => setTimeout(r, CommandExecService.delay));
             }
+            DiagnosticService.record("CommandExecService_runNext");
             resolve(result);
         } catch (e) {
             if (e instanceof DOMException && e.name === "AbortError") {
@@ -364,7 +385,7 @@ class CommandExecService {
                 OutputService.flush();
                 resolve(null);
             } else if (e instanceof OSError) {
-                DiagnosticService.record("CommandExecService_commandError " + chain.simplify());
+                DiagnosticService.record("CommandExecService_error executing " + chain.simplify());
                 OutputService.add({ type: "error", content: e.message });
                 resolve(null);
             } else {
@@ -985,6 +1006,14 @@ function defineCommands(){
                 description: "Treat the search text as a regular expression",
                 required: false,
                 datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "search_loc",
+                short: "l",
+                description: "Search in the location part of the line as well",
+                required: false,
+                datatype: "boolean",
             }
         ]
     }, ({args, pipe, flags}, os, signal) => {
@@ -1057,12 +1086,77 @@ function defineCommands(){
         return result;
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext"]);
+    CommandService.defineCommand("createfile", {
+        options: {
+            description: "Creates a file",
+            alias: "cf"
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "file_identifier",
+                description: "The name of the file to create in [name].[filetype] format",
+                required: true,
+            },
+            {
+                type: "positional",
+                name: "path",
+                description: "The path to create the file in. When omitted, the file will be created in the current working directory",
+                required: false,
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const fileident = args[0];
+        const path = args[1] || "/";
+
+        let [name, type] = fileident.split(".");
+
+        if(!name) return { type: "error", content: "File name is required", loc: "" };
+        if(!type) type = "txt";
+
+        try {
+            FilesystemService.createFile(name, type, path, []);
+            return { type: "line", content: `Created file "${name}.${type}"`, loc: "" };
+        } catch (e) {
+            return { type: "error", content: e.message, loc: "" };
+        }
+    })
+
+    CommandService.defineCommand("list", {
+        options: {
+            description: "Lists files in the current working directory",
+            alias: "ls"
+        },
+        schema: [],
+    }, ({args, flags}, os, signal) => {
+        const children = FilesystemService.resolvePath(FilesystemService.getCurrentPath()).children;
+        const lines = [];
+
+        children.entries().forEach(([name, child]) => {
+            if (child instanceof OSDirectory){
+                lines.push({ type: "line", content: ` [DIR] ${child.name}`, loc: "" });
+            }
+        })
+        children.entries().forEach(([name, child]) => {
+            if(child instanceof OSFile){
+                lines.push({ type: "line", content: `       ${child.name}.${child.type}`, loc: "" });
+            }
+        })
+
+        if(lines.length == 0){
+            return { type: "line", content: "No files found in current directory", loc: "" };
+        }
+
+        return lines;
+
+    })
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "createfile", "list"]);
 }
 
 function createFilesystem(){
-    FilesystemService.createFile("/hi", "txt", ["hi"])
-    console.log(FilesystemService.files);
+    FilesystemService.createFile("hi",  "txt", "/", ["what the sigma"]);
+    console.log(FilesystemService.root);
 }
 
 class OS {
