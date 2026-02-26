@@ -19,6 +19,139 @@ class OSError extends Error {
     }
 }
 
+class OSFile {
+    #content = [];
+    constructor(name, type, parentFid, content = []) {
+        this.name = name;
+        this.type = type;
+        this.parentFid = parentFid;
+        this.#content = content;
+    }
+
+    read() {
+        return this.#content;
+    }
+
+    write(newContent) {
+        this.#content = newContent;
+    }
+}
+
+class FilesystemService {
+    static os = null;
+    static enabled = false;
+
+    static name = "FilesystemService";
+
+    static files = new Map();       // fid -> OSFile
+    static directories = new Map(); // fid -> { name, parentFid, children: Map(name -> fid) }
+
+    static nextFid = 1;
+    static currentDirectory = null; // fid
+
+    static init(os) {
+        if (this.os) return;
+
+        this.os = os;
+        this.enabled = true;
+
+        // Create root directory
+        const rootFid = this.nextFid++;
+        this.directories.set(rootFid, { name: "", parentFid: null, children: new Map() });
+        this.currentDirectory = rootFid;
+
+        DiagnosticService.record("FilesystemService_init");
+    }
+
+    static enable() {
+        this.enabled = true;
+        DiagnosticService.record("FilesystemService_enable");
+    }
+
+    static disable() {
+        this.enabled = false;
+        DiagnosticService.record("FilesystemService_disable");
+    }
+
+    static getFile(fid) {
+        if (!this.enabled) return null;
+        return this.files.get(fid) || null;
+    }
+
+    static getDirectory(fid) {
+        if (!this.enabled) return null;
+        return this.directories.get(fid) || null;
+    }
+
+    static createDirectory(path, name) {
+        if (!this.enabled) return null;
+
+        const parentFid = this.resolvePath(path);
+        if (parentFid === null || !this.directories.has(parentFid)) return null;
+
+        const fid = this.nextFid++;
+        this.directories.set(fid, { name, parentFid, children: new Map() });
+        this.directories.get(parentFid).children.set(name, fid);
+
+        return fid;
+    }
+
+    // --- Now supports paths ---
+    static createFile(path, type, content = []) {
+        if (!this.enabled) return null;
+
+        // Split path into directory + filename
+        const parts = path.split("/").filter(p => p.length > 0);
+        if (parts.length === 0) return null;
+
+        const filename = parts.pop();                  // last part is the file name
+        const dirPath = (path.startsWith("/") ? "/" : "") + parts.join("/"); 
+        const parentFid = parts.length > 0 ? this.resolvePath(dirPath) : this.currentDirectory;
+
+        if (parentFid === null || !this.directories.has(parentFid)) return null;
+
+        const fid = this.nextFid++;
+        const file = new OSFile(filename, type, parentFid, content);
+        this.files.set(fid, file);
+        this.directories.get(parentFid).children.set(filename, fid);
+
+        return fid;
+    }
+
+    static resolvePath(path) {
+        if (!this.enabled) return null;
+
+        const parts = path.split("/").filter(p => p.length > 0);
+        let fid = path.startsWith("/") ? 1 : this.currentDirectory; // root fid is 1
+
+        for (const part of parts) {
+            if (part === ".") continue;
+            if (part === "..") {
+                const dir = this.directories.get(fid);
+                fid = dir?.parentFid ?? fid;
+            } else {
+                const dir = this.directories.get(fid);
+                if (!dir || !dir.children.has(part)) return null;
+                fid = dir.children.get(part);
+            }
+        }
+        return fid;
+    }
+
+    static getCurrentPath() {
+        let path = [];
+        let fid = this.currentDirectory;
+
+        while (fid && fid !== 1) {
+            const dir = this.directories.get(fid);
+            path.unshift(dir.name);
+            fid = dir.parentFid;
+        }
+
+        return "/" + path.join("/");
+    }
+}
+
 class SaviorService {
     static os = null;
     static enabled = false;
@@ -533,7 +666,7 @@ function defineCommands(){
             return compressed.map(x => ({ type: "line", content: x, loc: "" }));
         } else if(action === "list"){
 
-            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService];
+            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService];
             const lines = [];
             const max = Math.max(...services.map(s => s.name.length));
 
@@ -553,10 +686,11 @@ function defineCommands(){
                 "command": CommandService,
                 "diagnostic": DiagnosticService,
                 "savior": SaviorService,
+                "filesystem": FilesystemService
             };
 
 
-            const criticalServices = ["commandexec", "savior", "command"];
+            const criticalServices = ["commandexec", "savior", "command", "filesystem"];
 
             const service = serviceMap[serviceName.toLowerCase()];
 
@@ -926,6 +1060,11 @@ function defineCommands(){
     CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext"]);
 }
 
+function createFilesystem(){
+    FilesystemService.createFile("/hi", "txt", ["hi"])
+    console.log(FilesystemService.files);
+}
+
 class OS {
     commandRunning = false;
 
@@ -1063,6 +1202,8 @@ class OS {
         CommandExecService.init(this);
         OutputService.init(this);
         SaviorService.init(this);
+        FilesystemService.init(this);
+        createFilesystem();
 
         function getRealColors(el) {
             let current = el;
@@ -1423,7 +1564,7 @@ class OS {
         this.elem.appendChild(line);
     }
 
-    commandLine(loc = ">"){
+    commandLine(){
         const line = document.createElement('div');
         const contentElem = document.createElement('div');
         const locElem = document.createElement('span');
@@ -1452,7 +1593,7 @@ class OS {
             contentElem.focus();
         });
 
-        locElem.textContent = loc;
+        locElem.textContent = FilesystemService.getCurrentPath() + ":>";
 
         line.classList.add('line');
         line.appendChild(locElem);
