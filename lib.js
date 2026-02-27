@@ -74,26 +74,58 @@ class FilesystemService {
     /**
      * 
      * @param {string} path 
+     * @param {"file"|"directory"|"full"|"none"} assumption
      * @returns 
      */
-    static resolvePath(path) {
+    static resolvePath(path, assumption = "full") {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
         const parts = path.split("/").filter(p => p.length > 0);
         let node = path.startsWith("/") ? this.root : this.currentDirectory;
 
         for (const part of parts) {
+
             if (part === ".") continue;
+
             if (part === "..") {
                 node = node.parent ?? node;
-            } else if (node instanceof OSDirectory && node.children.has(part)) {
-                node = node.children.get(part);
-            } else {
-                return null;
+                continue;
             }
+
+            if (!(node instanceof OSDirectory)) return null;
+
+            // exact match always wins
+            if (node.children.has(part)) {
+                node = node.children.get(part);
+                continue;
+            }
+
+            if (assumption === "none") return null;
+
+            const matches = [];
+
+            for (const [name, child] of node.children) {
+                if (!name.startsWith(part)) continue;
+
+                if (assumption === "file" && child instanceof OSDirectory) continue;
+                if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+
+                // "full" allows both
+                matches.push(child);
+            }
+
+            if (matches.length === 0) return null;
+
+            if (matches.length > 1) {
+                throw new OSError(`Ambiguous path segment '${part}'`);
+            }
+
+            node = matches[0];
         }
 
-        DiagnosticService.record(`FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`);
+        DiagnosticService.record(
+            `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`
+        );
 
         return node;
     }
@@ -159,12 +191,12 @@ class FilesystemService {
     /**
      * 
      * @param {String} path
-     * @param {"file"|"directory"|"full"|null} assumption 
+     * @param {"file"|"directory"|"full"|none} assumption 
      * @returns 
      */
-    static setWorkingDirectory(path, assumption = null) {
+    static setWorkingDirectory(path, assumption = "none") {
         if(!this.enabled) throw new OSError("FilesystemService is disabled");
-        const dir = this.resolvePath(path);
+        const dir = this.resolvePath(path, assumption);
         if (!dir || !(dir instanceof OSDirectory)) throw new OSError(`Directory not found: "${path}"`);
 
         this.currentDirectory = dir;
@@ -1211,7 +1243,7 @@ function defineCommands(){
         const path = args[0];
 
         try {
-            FilesystemService.setWorkingDirectory(path);
+            FilesystemService.setWorkingDirectory(path, "full");
             return;
         } catch (e) {
             return { type: "error", content: e.message, loc: "" };
