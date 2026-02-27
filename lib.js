@@ -71,6 +71,11 @@ class FilesystemService {
         DiagnosticService.record("FilesystemService_disable");
     }
 
+    /**
+     * 
+     * @param {string} path 
+     * @returns 
+     */
     static resolvePath(path) {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
@@ -95,6 +100,12 @@ class FilesystemService {
 
     static validationRegex = /^[a-zA-Z0-9_\-\.]+$/;
 
+    /**
+     * 
+     * @param {string} name 
+     * @param {string} parentPath 
+     * @returns 
+     */
     static createDirectory(name, parentPath) {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
@@ -111,11 +122,19 @@ class FilesystemService {
 
         const dir = new OSDirectory(name, parentDir);
         parentDir.children.set(name, dir);
-        DiagnosticService.record(`FilesystemService_createDirectory ${name} -> ${parentDir.name}`);
+        DiagnosticService.record(`FilesystemService_createDirectory ${name} >> ${parentDir.name}`);
 
         return dir;
     }
 
+    /**
+     * 
+     * @param {string} name 
+     * @param {string} type 
+     * @param {string} parentPath 
+     * @param {string[]} content 
+     * @returns 
+     */
     static createFile(name, type, parentPath, content = []) {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
@@ -137,10 +156,16 @@ class FilesystemService {
         return file;
     }
 
-    static setWorkingDirectory(path) {
+    /**
+     * 
+     * @param {String} path
+     * @param {"file"|"directory"|"full"|null} assumption 
+     * @returns 
+     */
+    static setWorkingDirectory(path, assumption = null) {
         if(!this.enabled) throw new OSError("FilesystemService is disabled");
         const dir = this.resolvePath(path);
-        if (!dir || !(dir instanceof OSDirectory)) return false;
+        if (!dir || !(dir instanceof OSDirectory)) throw new OSError(`Directory not found: "${path}"`);
 
         this.currentDirectory = dir;
         this.workingDirectory = this.getCurrentPath();
@@ -296,6 +321,11 @@ class DiagnosticService {
     static record(action){
         if(!this.enabled) return;
         this.diagnosticData.push({ action, timestamp: Date.now() });
+    }
+
+    static note(action){
+        if(!this.enabled) return;
+        this.diagnosticData.push({ action: `note: ${action}`, timestamp: Date.now() });
     }
 
     static getData(){
@@ -1086,37 +1116,103 @@ function defineCommands(){
         return result;
     });
 
-    CommandService.defineCommand("createfile", {
+    CommandService.defineCommand("makefile", {
         options: {
             description: "Creates a file",
-            alias: "cf"
+            alias: "mf",
+            example: [
+                "makefile myfile.txt",
+                "makefile path/myfile.txt",
+            ]
         },
         schema: [
             {
                 type: "positional",
-                name: "file_identifier",
+                name: "path",
                 description: "The name of the file to create in [name].[filetype] format",
                 required: true,
-            },
-            {
-                type: "positional",
-                name: "path",
-                description: "The path to create the file in. When omitted, the file will be created in the current working directory",
-                required: false,
-            },
+            }
         ]
     }, ({args, flags}, os, signal) => {
-        const fileident = args[0];
-        const path = args[1] || "/";
+        const path = args[0];
 
-        let [name, type] = fileident.split(".");
+        if(!path) return { type: "error", content: "File identifier is required", loc: "" };
 
-        if(!name) return { type: "error", content: "File name is required", loc: "" };
+        const parts = path.split("/");
+
+        let lastPart = parts.pop();
+
+        let [name, type] = lastPart.split(".");
+
         if(!type) type = "txt";
 
         try {
-            FilesystemService.createFile(name, type, path, []);
+            FilesystemService.createFile(name, type, parts.join("/"), [""]);
             return { type: "line", content: `Created file "${name}.${type}"`, loc: "" };
+        } catch (e) {
+            return { type: "error", content: e.message, loc: "" };
+        }   
+    })
+
+    CommandService.defineCommand("makedirectory", {
+        options: {
+            description: "Creates a directory",
+            alias: "md",
+            example: [
+                "makedirectory mydir",
+                "makedirectory /path/mydir"
+            ]
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "directory_name",
+                description: "The name of the directory to create",
+                required: true,
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        const parts = path.split("/");
+
+        const dirName = parts.pop();
+
+        if(!dirName) return { type: "error", content: "Directory name is required", loc: "" };
+
+        try {
+            FilesystemService.createDirectory(dirName, parts.join("/"));
+            return { type: "line", content: `Created directory "${dirName}"`, loc: "" };
+        } catch (e) {
+            return { type: "error", content: e.message, loc: "" };
+        }
+    })
+
+    CommandService.defineCommand("changedirectory", {
+        options: {
+            description: "Changes the current working directory",
+            alias: "cd",
+            example: [
+                "changedirectory",
+                "changedirectory /path/to/directory",
+                "changedirectory ..",
+                "changedirectory ../.."
+            ]
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "directory_path",
+                description: "The path of the directory to change to.",
+                required: true,
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        try {
+            FilesystemService.setWorkingDirectory(path);
+            return;
         } catch (e) {
             return { type: "error", content: e.message, loc: "" };
         }
@@ -1148,15 +1244,16 @@ function defineCommands(){
         }
 
         return lines;
-
     })
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "createfile", "list"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory"]);
 }
 
 function createFilesystem(){
-    FilesystemService.createFile("hi",  "txt", "/", ["what the sigma"]);
-    console.log(FilesystemService.root);
+    DiagnosticService.note("Creating filesystem");
+    DiagnosticService.disable();
+    FilesystemService.createDirectory("documents", "/")
+    DiagnosticService.enable();
 }
 
 class OS {
