@@ -365,6 +365,46 @@ class DiagnosticService {
     }
 }
 
+class FSCapability {
+    constructor(rights = {
+        read: true, // read files
+        write: true, // write to files
+        execute: true, // execute files
+        traverse: true, // move into this directory/this files directory
+        create: false, // create new files/directories in this directory
+    }){
+        this.rights = rights;
+    }
+}
+
+// rwetc
+// -----
+// r--tc
+
+class PermissionService {
+    static enabled = false;
+    static os = null;
+
+    static name = "PermissionService";
+    
+    init(os){
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("PermissionService_init");
+    }
+
+    enable(){
+        this.enabled = true;
+        DiagnosticService.record("PermissionService_enable");
+    }
+
+    disable(){
+        this.enabled = false;
+        DiagnosticService.record("PermissionService_disable");
+    }
+}
+
 class CommandExecService {
     static queue = [];
     static running = false;
@@ -422,7 +462,7 @@ class CommandExecService {
 
     static async runNext() {
         if(!this.enabled) return;
-        if (!this.os) throw new Error("CommandExecService not initialized with OS instance");
+        if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
         if (this.running) return;
         if (this.queue.length === 0) return;
 
@@ -1278,13 +1318,43 @@ function defineCommands(){
         return lines;
     })
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory"]);
+    CommandService.defineCommand("peek", {
+        options: {
+            description: "Read a file",
+            alias: "p"
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "file_path",
+                description: "The path of the file to read",
+                required: true,
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        try {
+            const file = FilesystemService.resolvePath(path);
+            if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
+            OutputService.add({ type: "line", content: `--- Contents of "${file.name}.${file.type}" ---`, loc: "" });
+            file.read().forEach(line => {
+                OutputService.add({ type: "line", content: line, loc: ":" });
+            })
+        } catch (e) {
+            return { type: "error", content: e.message, loc: "" };
+        }
+    });
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek"]);
 }
 
 function createFilesystem(){
     DiagnosticService.note("Creating filesystem");
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
+    FilesystemService.createDirectory("config", "/")
+    FilesystemService.createFile("uhl", "l", "/config", ["root", "admin", "user"]);
     DiagnosticService.enable();
 }
 
@@ -1816,7 +1886,7 @@ class OS {
             contentElem.focus();
         });
 
-        locElem.textContent = FilesystemService.getCurrentPath() + ":>";
+        locElem.textContent = FilesystemService.getCurrentPath() + ">";
 
         line.classList.add('line');
         line.appendChild(locElem);
