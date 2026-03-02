@@ -1,3 +1,112 @@
+class SwagObjectParser {
+    constructor(input) {
+        this.lines = input.split(/\r?\n/);
+        this.index = 0;
+    }
+
+    toString(){
+        // reverse the object back to swag format
+        const obj = this;
+        const lines = [];
+        
+        
+    }
+
+    parse() {
+        const obj = {};
+        while (this.index < this.lines.length) {
+            let line = this.lines[this.index].trim();
+            this.index++;
+
+            // Skip empty lines or comments
+            if (!line || line.startsWith('//')) continue;
+
+            // Detect nested assignment
+            let nestedMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{$/);
+            if (nestedMatch) {
+                const key = nestedMatch[1];
+                const nestedObj = this.parseBlock();
+                obj[key] = nestedObj;
+                continue;
+            }
+
+            // Detect key-value pair
+            let kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$/);
+            if (kvMatch) {
+                const key = kvMatch[1];
+                let value = kvMatch[2];
+
+                // Remove inline comments
+                value = value.replace(/\/\/.*$/, '').trim();
+
+                // Parse value types
+                if (/^".*"$/.test(value)) {
+                    value = value.slice(1, -1);
+                } else if (/^\d+(\.\d+)?$/.test(value)) {
+                    value = Number(value);
+                } else if (/^(true|false)$/.test(value)) {
+                    value = value === 'true';
+                } else {
+                    throw new SyntaxError(`Invalid value at line ${this.index}: ${value}`);
+                }
+
+                obj[key] = value;
+                continue;
+            }
+
+            throw new SyntaxError(`Invalid syntax at line ${this.index}: ${line}`);
+        }
+        return obj;
+    }
+
+    parseBlock() {
+        const obj = {};
+        while (this.index < this.lines.length) {
+            let line = this.lines[this.index].trim();
+            this.index++;
+
+            // End of block
+            if (line === '}') break;
+            if (!line || line.startsWith('//')) continue;
+
+            // Nested assignment inside block
+            let nestedMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{$/);
+            if (nestedMatch) {
+                const key = nestedMatch[1];
+                obj[key] = this.parseBlock();
+                continue;
+            }
+
+            // Key-value pair
+            let kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$/);
+            if (kvMatch) {
+                const key = kvMatch[1];
+                let value = kvMatch[2];
+
+                // Remove inline comments
+                value = value.replace(/\/\/.*$/, '').trim();
+
+                // Parse value types
+                if (/^".*"$/.test(value)) {
+                    value = value.slice(1, -1);
+                } else if (/^\d+(\.\d+)?$/.test(value)) {
+                    value = Number(value);
+                } else if (/^(true|false)$/.test(value)) {
+                    value = value === 'true';
+                } else {
+                    throw new SyntaxError(`Invalid value at line ${this.index}: ${value}`);
+                }
+
+                obj[key] = value;
+                continue;
+            }
+
+            throw new SyntaxError(`Invalid syntax at line ${this.index}: ${line}`);
+        }
+        return obj;
+    }
+}
+
 class OSCommandChain {
     constructor(parts){
         this.parts = parts;
@@ -13,9 +122,10 @@ class OSCommandChain {
 }
 
 class OSError extends Error {
-    constructor(message){
+    constructor(message, severity = 0) {
         super(message);
         this.name = "OSError";
+        this.severity = severity;
     }
 }
 
@@ -44,6 +154,23 @@ class OSDirectory {
         this.children = new Map(); // name -> OSFile or OSDirectory
     }
 }
+
+// /[a-zA-Z_][a-zA-Z0-9_]*/g for keys
+/*
+
+newlines are syntax
+string_name = { 
+    string_key: "string value"
+    stringkey2: 1 // number key
+    stringkey3: true // boolean 
+    nested = { 
+        anotherstringkey: "hi"
+    } 
+    // comment
+    // no other key types are allowed 
+}
+
+*/
 
 class FilesystemService {
     static enabled = false;
@@ -77,16 +204,72 @@ class FilesystemService {
      * @param {"file"|"directory"|"full"|"none"} assumption
      * @returns 
      */
-    static resolvePath(path, assumption = "full") {
+    // static resolvePath(path, assumption = "none") {
+    //     if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+    //     const parts = path.split("/").filter(p => p.length > 0);
+    //     let node = path.startsWith("/") ? this.root : this.currentDirectory;
+
+    //     for (const part of parts) {
+
+    //         if (part === ".") continue;
+
+    //         if (part === "..") {
+    //             node = node.parent ?? node;
+    //             continue;
+    //         }
+
+    //         if (!(node instanceof OSDirectory)) return null;
+
+    //         // exact match always wins
+    //         if (node.children.has(part)) {
+    //             node = node.children.get(part);
+    //             continue;
+    //         }
+
+    //         const matches = [];
+
+    //         for (const [name, child] of node.children) {
+
+    //             console.log(name, child, node.children)
+
+    //             if(assumption === "none"){
+    //                 if(name === part) matches.push(child);
+    //             } else {
+    //                 if (!name.startsWith(part)) continue;
+
+    //                 if (assumption === "file" && child instanceof OSDirectory) continue;
+    //                 if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+
+    //                 // "full" allows both
+    //                 matches.push(child);
+    //             }
+    //         }
+
+    //         if (matches.length === 0) return null;
+
+    //         if (matches.length > 1) {
+    //             throw new OSError(`Ambiguous path segment '${part}'`);
+    //         }
+
+    //         node = matches[0];
+    //     }
+
+    //     DiagnosticService.record(
+    //         `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`
+    //     );
+
+    //     return node;
+    // }
+
+    static resolvePath(path, assumption = "none") {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
         const parts = path.split("/").filter(p => p.length > 0);
         let node = path.startsWith("/") ? this.root : this.currentDirectory;
 
         for (const part of parts) {
-
             if (part === ".") continue;
-
             if (part === "..") {
                 node = node.parent ?? node;
                 continue;
@@ -94,28 +277,34 @@ class FilesystemService {
 
             if (!(node instanceof OSDirectory)) return null;
 
-            // exact match always wins
+            // Exact match always wins
             if (node.children.has(part)) {
                 node = node.children.get(part);
                 continue;
             }
 
-            if (assumption === "none") return null;
-
             const matches = [];
 
             for (const [name, child] of node.children) {
-                if (!name.startsWith(part)) continue;
 
-                if (assumption === "file" && child instanceof OSDirectory) continue;
-                if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+                if (assumption === "none") {
+                    const type = part.split(".")[1];
 
-                // "full" allows both
-                matches.push(child);
+                    const [checkName, checkType] = [child.name, child.type];
+
+                    if (name === checkName && type === checkType) matches.push(child);
+                } else {
+                    // partial match allowed
+                    if (!name.startsWith(part)) continue;
+
+                    if (assumption === "file" && child instanceof OSDirectory) continue;
+                    if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+
+                    matches.push(child);
+                }
             }
 
             if (matches.length === 0) return null;
-
             if (matches.length > 1) {
                 throw new OSError(`Ambiguous path segment '${part}'`);
             }
@@ -306,6 +495,7 @@ class OutputService {
         for(const line of this.buffer){
             if(line.type === "line") this.os.line(line.content, line.loc);
             else if(line.type === "error") this.os.error(line.content);
+            else if(line.type === "severe_error") this.os.severe(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
         }
@@ -488,7 +678,9 @@ class CommandExecService {
                 resolve(null);
             } else if (e instanceof OSError) {
                 DiagnosticService.record("CommandExecService_error executing " + chain.simplify());
-                OutputService.add({ type: "error", content: e.message });
+
+                if(e.severity === 0) OutputService.add({ type: "error", content: e.message });
+                else if(e.severity === 1) OutputService.add({ type: "severe_error", content: e.message });
                 resolve(null);
             } else {
                 DiagnosticService.record("CommandExecService_unexpectedError " + chain.simplify());
@@ -789,7 +981,7 @@ function defineCommands(){
             return compressed.map(x => ({ type: "line", content: x, loc: "" }));
         } else if(action === "list"){
 
-            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService];
+            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService];
             const lines = [];
             const max = Math.max(...services.map(s => s.name.length));
 
@@ -809,11 +1001,12 @@ function defineCommands(){
                 "command": CommandService,
                 "diagnostic": DiagnosticService,
                 "savior": SaviorService,
-                "filesystem": FilesystemService
+                "filesystem": FilesystemService,
+                "config": ConfigService,
             };
 
 
-            const criticalServices = ["commandexec", "savior", "command", "filesystem"];
+            const criticalServices = ["commandexec", "savior", "command", "filesystem", "config"];
 
             const service = serviceMap[serviceName.toLowerCase()];
 
@@ -1335,18 +1528,79 @@ function defineCommands(){
         const path = args[0];
 
         try {
-            const file = FilesystemService.resolvePath(path);
+            const file = FilesystemService.resolvePath(path, "full");
             if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
             OutputService.add({ type: "line", content: `--- Contents of "${file.name}.${file.type}" ---`, loc: "" });
+
             file.read().forEach(line => {
                 OutputService.add({ type: "line", content: line, loc: ":" });
             })
         } catch (e) {
-            return { type: "error", content: e.message, loc: "" };
+            if(e instanceof OSError) return { type: "error", content: e.message, loc: "" };
+            else { 
+                console.error(e);
+                return { type: "error", content: `An unexpected error occurred while reading the file. Check console for details.`, loc: "" }; 
+            }
         }
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek"]);
+    CommandService.defineCommand("time", {
+        options: {
+            description: "Outputs the current timestamp",
+            alias: "time"
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "template",
+                description: "The template to use for the timestamp. If not provided, the default template from the config will be used.",
+                required: false,
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const template = args[0] || ConfigService.get("timestamp");
+        return { type: "line", content: os.timestamp(template), loc: "" };
+    })
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time"]);
+}
+
+function normalizeIndentation(string, indentSize = 4){
+    return string.split("\n")
+    .map(line => 
+        line.replace(new RegExp(`^\\s{${indentSize}}`), "")
+    )
+}
+
+class ConfigService {
+    static #config = null;
+    static os = null;
+
+    static name = "ConfigService";
+
+    static init(os){
+        if(this.#config) return;
+        this.os = os;
+        this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")).parse();
+        DiagnosticService.record("ConfigService_init");
+    }
+
+    static enable(){
+        DiagnosticService.record("ConfigService_enable");
+    }
+
+    static disable(){
+        DiagnosticService.record("ConfigService_disable");
+    }
+
+    static get(key){
+        if(!this.#config) throw new Error("ConfigService is not initialized");
+        DiagnosticService.record(`ConfigService_get ${key}`);
+
+        if(this.#config[key] == undefined) throw new OSError(`Config key "${key}" is not defined in /config/user.conf`);
+
+        return this.#config[key]
+    }
 }
 
 function createFilesystem(){
@@ -1354,7 +1608,17 @@ function createFilesystem(){
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("config", "/")
-    FilesystemService.createFile("uhl", "l", "/config", ["root", "admin", "user"]);
+    FilesystemService.createFile("user", "conf", "/config", []
+        // normalizeIndentation(
+        //     `
+        //     timestamp: "d/mn/Y h:m:s.l"
+        //     `, 12
+        // )
+    );
+
+    //console.log("userfile", new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")));
+
+    //FilesystemService.createFile("uhl", "l", "/config", ["root", "admin", "user"]);
     DiagnosticService.enable();
 }
 
@@ -1497,6 +1761,7 @@ class OS {
         SaviorService.init(this);
         FilesystemService.init(this);
         createFilesystem();
+        ConfigService.init(this);
 
         function getRealColors(el) {
             let current = el;
@@ -1850,6 +2115,21 @@ class OS {
         contentElem.textContent = content;
         locElem.textContent = "SAVIOR";
         locElem.classList.add('savior');
+
+        line.classList.add('line');
+        line.appendChild(locElem);
+        line.appendChild(contentElem);
+        this.elem.appendChild(line);
+    }
+
+    severe(content){
+        const line = document.createElement('div');
+        const contentElem = document.createElement('div');
+        const locElem = document.createElement('span');
+
+        contentElem.textContent = content;
+        locElem.textContent = "SEVERE ERROR";
+        locElem.classList.add('severe');
 
         line.classList.add('line');
         line.appendChild(locElem);
