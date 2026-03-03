@@ -1,176 +1,45 @@
-class SwagObjectParser {
-    constructor(input) {
-        this.lines = input.split(/\r?\n/);
-        this.index = 0;
+class ConfigService {
+    static #config = null;
+    static os = null;
+    static enabled = false;
+
+    static name = "ConfigService";
+
+    static init(os){
+        if(this.os) return;
+        this.enabled = true;
+        this.os = os;
+        DiagnosticService.record("ConfigService_init");
+        this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read()).parse();
     }
 
-    toString(){
-        // reverse the object back to swag format
-        const obj = this;
-        const lines = [];
-        
-        
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("ConfigService_enable");
     }
 
-    parse() {
-        const obj = {};
-        while (this.index < this.lines.length) {
-            let line = this.lines[this.index].trim();
-            this.index++;
-
-            // Skip empty lines or comments
-            if (!line || line.startsWith('//')) continue;
-
-            // Detect nested assignment
-            let nestedMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{$/);
-            if (nestedMatch) {
-                const key = nestedMatch[1];
-                const nestedObj = this.parseBlock();
-                obj[key] = nestedObj;
-                continue;
-            }
-
-            // Detect key-value pair
-            let kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$/);
-            if (kvMatch) {
-                const key = kvMatch[1];
-                let value = kvMatch[2];
-
-                // Remove inline comments
-                value = value.replace(/\/\/.*$/, '').trim();
-
-                // Parse value types
-                if (/^".*"$/.test(value)) {
-                    value = value.slice(1, -1);
-                } else if (/^\d+(\.\d+)?$/.test(value)) {
-                    value = Number(value);
-                } else if (/^(true|false)$/.test(value)) {
-                    value = value === 'true';
-                } else {
-                    throw new SyntaxError(`Invalid value at line ${this.index}: ${value}`);
-                }
-
-                obj[key] = value;
-                continue;
-            }
-
-            throw new SyntaxError(`Invalid syntax at line ${this.index}: ${line}`);
-        }
-        return obj;
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("ConfigService_disable");
     }
 
-    parseBlock() {
-        const obj = {};
-        while (this.index < this.lines.length) {
-            let line = this.lines[this.index].trim();
-            this.index++;
+    static get(key){
+        if(!this.#config) throw new OSError("ConfigService is not initialized");
+        if(!this.enabled) throw new OSError("ConfigService is not enabled", 1);
+        DiagnosticService.record(`ConfigService_get ${key}`);
 
-            // End of block
-            if (line === '}') break;
-            if (!line || line.startsWith('//')) continue;
+        if(this.#config[key] == undefined) throw new OSError(`Config key "${key}" is not defined in /config/user.conf`);
 
-            // Nested assignment inside block
-            let nestedMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{$/);
-            if (nestedMatch) {
-                const key = nestedMatch[1];
-                obj[key] = this.parseBlock();
-                continue;
-            }
+        return this.#config[key]
+    }
 
-            // Key-value pair
-            let kvMatch = line.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*(.+)$/);
-            if (kvMatch) {
-                const key = kvMatch[1];
-                let value = kvMatch[2];
-
-                // Remove inline comments
-                value = value.replace(/\/\/.*$/, '').trim();
-
-                // Parse value types
-                if (/^".*"$/.test(value)) {
-                    value = value.slice(1, -1);
-                } else if (/^\d+(\.\d+)?$/.test(value)) {
-                    value = Number(value);
-                } else if (/^(true|false)$/.test(value)) {
-                    value = value === 'true';
-                } else {
-                    throw new SyntaxError(`Invalid value at line ${this.index}: ${value}`);
-                }
-
-                obj[key] = value;
-                continue;
-            }
-
-            throw new SyntaxError(`Invalid syntax at line ${this.index}: ${line}`);
-        }
-        return obj;
+    static reload(){
+        if(!this.#config) throw new OSError("ConfigService is not initialized");
+        if(!this.enabled) throw new OSError("ConfigService is not enabled", 1);
+        DiagnosticService.record("ConfigService_reload");
+        this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read()).parse();
     }
 }
-
-class OSCommandChain {
-    constructor(parts){
-        this.parts = parts;
-    }
-
-    addPart(part){
-        this.parts.push(part);
-    }
-
-    simplify(){
-        return this.parts.map(part => part.name).join("_");
-    }
-}
-
-class OSError extends Error {
-    constructor(message, severity = 0) {
-        super(message);
-        this.name = "OSError";
-        this.severity = severity;
-    }
-}
-
-class OSFile {
-    #content = [];
-    constructor(name, type, parent, content = []) {
-        this.name = name;
-        this.type = type;
-        this.parent = parent; // parent directory
-        this.#content = content;
-    }
-
-    read() {
-        return this.#content;
-    }
-
-    write(newContent) {
-        this.#content = newContent;
-    }
-}
-
-class OSDirectory {
-    constructor(name, parent = null) {
-        this.name = name;
-        this.parent = parent;
-        this.children = new Map(); // name -> OSFile or OSDirectory
-    }
-}
-
-// /[a-zA-Z_][a-zA-Z0-9_]*/g for keys
-/*
-
-newlines are syntax
-string_name = { 
-    string_key: "string value"
-    stringkey2: 1 // number key
-    stringkey3: true // boolean 
-    nested = { 
-        anotherstringkey: "hi"
-    } 
-    // comment
-    // no other key types are allowed 
-}
-
-*/
 
 class FilesystemService {
     static enabled = false;
@@ -204,122 +73,6 @@ class FilesystemService {
      * @param {"file"|"directory"|"full"|"none"} assumption
      * @returns 
      */
-    // static resolvePath(path, assumption = "none") {
-    //     if (!this.enabled) throw new OSError("FilesystemService is disabled");
-
-    //     const parts = path.split("/").filter(p => p.length > 0);
-    //     let node = path.startsWith("/") ? this.root : this.currentDirectory;
-
-    //     for (const part of parts) {
-    //         if (part === ".") continue;
-    //         if (part === "..") {
-    //             node = node.parent ?? node;
-    //             continue;
-    //         }
-
-    //         if (!(node instanceof OSDirectory)) return null;
-
-    //         const [name, type] = part.split(".");
-
-    //         if(assumption === "none"){
-    //             if(node.children.has(name)){
-    //                 const child = node.children.get(name);
-    //                 if(child.type !== type) return null;
-    //                 else node = child;
-    //             } else {
-    //                 return null;
-    //             }
-    //         } else {
-    //         }
-            
-            
-            
-    //         // else {
-    //         //     if (node.children.has(part)) {
-    //         //         node = node.children.get(part);
-    //         //         continue;
-    //         //     }
-
-    //         //     const matches = [];
-
-    //         //     for (const [name, child] of node.children) {
-    //         //         const fileName = name.split(".")[0];
-    //         //         const fileType = name.split(".")[1];
-
-                    
-
-    //         //         if(child instanceof OSFile && (assumption === "file" || assumption === "full")){
-    //         //             if(fileName.startsWith(part)) matches.push(child);
-    //         //         }
-
-    //         //         if(child instanceof OSDirectory && (assumption === "directory" || assumption === "full")){
-    //         //             if(name.startsWith(part)) matches.push(child);
-    //         //         }
-    //         //     }
-
-    //         //     if (matches.length === 0) return null;
-
-    //         //     if (matches.length > 1) {
-    //         //         throw new OSError(`Ambiguous path segment '${part}'`);
-    //         //     }
-
-    //         //     node = matches[0];
-    //         // }
-
-    //             // if(node.children.has(name)){
-    //             //     const child = node.children.get(name);
-    //             //     if(type !== undefined && ((child instanceof OSDirectory && type !== "dir") || (child instanceof OSFile && type !== child.type))){
-    //             //         return null;
-    //             //     }
-    //             //     node = child;
-    //             // } else {
-    //             //     return null;
-    //             // }
-            
-
-    //         // // Exact match always wins
-    //         // if (node.children.has(part)) {
-    //         //     node = node.children.get(part);
-    //         //     continue;
-    //         // }
-
-    //         // const matches = [];
-
-    //         // for (const [name, child] of node.children) {
-    //         //     if (assumption === "none") {
-    //         //         continue;
-    //         //         // const type = part.split(".")[1];
-
-    //         //         // const [checkName, checkType] = [child.name, child.type];
-
-    //         //         // console.log(type, checkType, part)
-
-    //         //         // if (name === checkName && type === checkType) matches.push(child);
-    //         //     } else {
-    //         //         // partial match allowed
-    //         //         if (!name.startsWith(part)) continue;
-
-    //         //         if (assumption === "file" && child instanceof OSDirectory) continue;
-    //         //         if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
-
-    //         //         matches.push(child);
-    //         //     }
-    //         // }
-
-    //         // if (matches.length === 0) return null;
-    //         // if (matches.length > 1) {
-    //         //     throw new OSError(`Ambiguous path segment '${part}'`);
-    //         // }
-
-    //         // node = matches[0];
-    //     }
-
-    //     DiagnosticService.record(
-    //         `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`
-    //     );
-
-    //     return node;
-    // }
     static resolvePath(path, assumption = "none") {
     if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
@@ -657,46 +410,6 @@ class DiagnosticService {
     }
 }
 
-class FSCapability {
-    constructor(rights = {
-        read: true, // read files
-        write: true, // write to files
-        execute: true, // execute files
-        traverse: true, // move into this directory/this files directory
-        create: false, // create new files/directories in this directory
-    }){
-        this.rights = rights;
-    }
-}
-
-// rwetc
-// -----
-// r--tc
-
-class PermissionService {
-    static enabled = false;
-    static os = null;
-
-    static name = "PermissionService";
-    
-    init(os){
-        if(this.os) return;
-        this.os = os;
-        this.enabled = true;
-        DiagnosticService.record("PermissionService_init");
-    }
-
-    enable(){
-        this.enabled = true;
-        DiagnosticService.record("PermissionService_enable");
-    }
-
-    disable(){
-        this.enabled = false;
-        DiagnosticService.record("PermissionService_disable");
-    }
-}
-
 class CommandExecService {
     static queue = [];
     static running = false;
@@ -984,6 +697,167 @@ class CommandService {
         }
 
         return { valid: true, error: null, flags };
+    }
+}
+
+class SwagObjectParser {
+    /**
+     * @param {string[]} input - Array of lines to parse
+     */
+    constructor(input) {
+        this.lines = input.map(line => line.trim()).filter(line => line.length > 0 && !line.startsWith('//'));
+        this.index = 0;
+    }
+
+    parse() {
+        // top-level behaves like a block, but has no closing brace
+        return this.parseBlock(true);
+    }
+
+    parseBlock(isTopLevel = false) {
+        const obj = {};
+
+        while (this.index < this.lines.length) {
+            const line = this._cleanLine(this.lines[this.index++]);
+            if (!line) continue;
+
+            if (line === "}") {
+                if (isTopLevel) {
+                    throw new SyntaxError("Unexpected '}' at top level");
+                }
+                return obj;
+            }
+
+            // nested object
+            const nested = line.match(
+                /^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*\{$/
+            );
+
+            if (nested) {
+                obj[nested[1]] = this.parseBlock(false);
+                continue;
+            }
+
+            // key = value
+            const kv = line.match(
+                /^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/
+            );
+
+            if (!kv) {
+                throw new OSError(`SwagObject parse error: Invalid line at ${this.index}: ${line}`);
+            }
+
+            const key = kv[1];
+            const value = this.parseValue(kv[2]);
+
+            obj[key] = value;
+        }
+
+        if (!isTopLevel) {
+            throw new OSError("SwagObject parse error: Unexpected end of input (missing })");
+        }
+
+        return obj;
+    }
+
+    parseValue(raw) {
+        const value = raw.trim();
+
+        // ----- array -----
+        if (value.startsWith("[") && value.endsWith("]")) {
+            const inner = value.slice(1, -1).trim();
+
+            if (inner === "") return [];
+
+            const parts = inner.split(",").map(p => p.trim());
+
+            return parts.map(p => {
+                // strings
+                if (/^(["']).*\1$/.test(p)) {
+                    return p.slice(1, -1);
+                }
+
+                // numbers
+                if (/^-?\d+(\.\d+)?$/.test(p)) {
+                    return Number(p);
+                }
+
+                // booleans
+                if (p === "true") return true;
+                if (p === "false") return false;
+
+                throw new OSError(`SwagObject parse error: Invalid array value: ${p}`);
+            });
+        }
+
+        // ----- string -----
+        if (/^(["']).*\1$/.test(value)) {
+            return value.slice(1, -1);
+        }
+
+        // ----- number -----
+        if (/^-?\d+(\.\d+)?$/.test(value)) {
+            return Number(value);
+        }
+
+        // ----- boolean -----
+        if (value === "true") return true;
+        if (value === "false") return false;
+
+        throw new OSError(`SwagObject parser error: Invalid value: ${value}`);
+    }
+
+    _cleanLine(line) {
+        line = line.replace(/\/\/.*$/, "");
+        return line.trim();
+    }
+}
+
+class OSCommandChain {
+    constructor(parts){
+        this.parts = parts;
+    }
+
+    addPart(part){
+        this.parts.push(part);
+    }
+
+    simplify(){
+        return this.parts.map(part => part.name).join("_");
+    }
+}
+
+class OSError extends Error {
+    constructor(message, severity = 0) {
+        super(message);
+        this.name = "OSError";
+        this.severity = severity;
+    }
+}
+
+class OSFile {
+    #content = [];
+    constructor(name, type, parent, content = []) {
+        this.name = name;
+        this.type = type;
+        this.parent = parent; // parent directory
+        this.#content = content;
+    }
+
+    read() {
+        return this.#content;
+    }
+
+    write(newContent) {
+        this.#content = newContent;
+    }
+}
+
+class OSDirectory {
+    constructor(name, parent = null) {
+        this.name = name;
+        this.parent = parent;
+        this.children = new Map(); // name -> OSFile or OSDirectory
     }
 }
 
@@ -1668,61 +1542,30 @@ function defineCommands(){
 }
 
 function normalizeIndentation(string, indentSize = 4){
-    return string.split("\n")
-    .map(line => 
-        line.replace(new RegExp(`^\\s{${indentSize}}`), "")
-    )
-}
+    return string.split("\n").filter(line => line.trim() !== "").map(line => {
+            return line.replace(new RegExp(`^\\s{${indentSize}}`), "")
+        }).join("\n")
 
-class ConfigService {
-    static #config = null;
-    static os = null;
 
-    static name = "ConfigService";
-
-    static init(os){
-        if(this.#config) return;
-        this.os = os;
-        //this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")).parse();
-        DiagnosticService.record("ConfigService_init");
-    }
-
-    static enable(){
-        DiagnosticService.record("ConfigService_enable");
-    }
-
-    static disable(){
-        DiagnosticService.record("ConfigService_disable");
-    }
-
-    static get(key){
-        if(!this.#config) throw new Error("ConfigService is not initialized");
-        DiagnosticService.record(`ConfigService_get ${key}`);
-
-        if(this.#config[key] == undefined) throw new OSError(`Config key "${key}" is not defined in /config/user.conf`);
-
-        return this.#config[key]
-    }
+    // return string.split("\n")
+    // .map(line => 
+    //     line.replace(new RegExp(`^\\s{${indentSize}}`), "")
+    // ).filter(line => line.trim() !== "");
 }
 
 function createFilesystem(){
-    DiagnosticService.note("Creating filesystem");
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("config", "/")
-    FilesystemService.createFile("user", "conf", "/config", []
-        // normalizeIndentation(
-        //     `
-        //     timestamp: "d/mn/Y h:m:s.l"
-        //     `, 12
-        // )
+    FilesystemService.createFile("user", "conf", "/config",
+        normalizeIndentation(
+            `
+            timestamp = "d/mn/Y h:m:s.l"
+            `, 12
+        ).split("\n")
     );
 
     //FilesystemService.createFile("readme", "txt", "/", ["wow!"])
-
-    console.log(FilesystemService.resolvePath("/c/u", "file"));
-
-    //console.log("userfile", new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")));
 
     //FilesystemService.createFile("uhl", "l", "/config", ["root", "admin", "user"]);
     DiagnosticService.enable();
