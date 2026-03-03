@@ -1534,7 +1534,7 @@ function defineCommands(){
             },
         ]
     }, ({args, flags}, os, signal) => {
-        const template = args[0] || ConfigService.get("timestamp");
+        const template = args[0] || ConfigService.get("timestamp_template");
         return { type: "line", content: os.timestamp(template), loc: "" };
     })
 
@@ -1545,12 +1545,6 @@ function normalizeIndentation(string, indentSize = 4){
     return string.split("\n").filter(line => line.trim() !== "").map(line => {
             return line.replace(new RegExp(`^\\s{${indentSize}}`), "")
         }).join("\n")
-
-
-    // return string.split("\n")
-    // .map(line => 
-    //     line.replace(new RegExp(`^\\s{${indentSize}}`), "")
-    // ).filter(line => line.trim() !== "");
 }
 
 function createFilesystem(){
@@ -1560,14 +1554,10 @@ function createFilesystem(){
     FilesystemService.createFile("user", "conf", "/config",
         normalizeIndentation(
             `
-            timestamp = "d/mn/Y h:m:s.l"
+            timestamp_template = "d/mn/Y h:m:s.l"
             `, 12
         ).split("\n")
     );
-
-    //FilesystemService.createFile("readme", "txt", "/", ["wow!"])
-
-    //FilesystemService.createFile("uhl", "l", "/config", ["root", "admin", "user"]);
     DiagnosticService.enable();
 }
 
