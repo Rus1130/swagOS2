@@ -211,9 +211,7 @@ class FilesystemService {
     //     let node = path.startsWith("/") ? this.root : this.currentDirectory;
 
     //     for (const part of parts) {
-
     //         if (part === ".") continue;
-
     //         if (part === "..") {
     //             node = node.parent ?? node;
     //             continue;
@@ -221,38 +219,99 @@ class FilesystemService {
 
     //         if (!(node instanceof OSDirectory)) return null;
 
-    //         // exact match always wins
-    //         if (node.children.has(part)) {
-    //             node = node.children.get(part);
-    //             continue;
-    //         }
+    //         const [name, type] = part.split(".");
 
-    //         const matches = [];
-
-    //         for (const [name, child] of node.children) {
-
-    //             console.log(name, child, node.children)
-
-    //             if(assumption === "none"){
-    //                 if(name === part) matches.push(child);
+    //         if(assumption === "none"){
+    //             if(node.children.has(name)){
+    //                 const child = node.children.get(name);
+    //                 if(child.type !== type) return null;
+    //                 else node = child;
     //             } else {
-    //                 if (!name.startsWith(part)) continue;
-
-    //                 if (assumption === "file" && child instanceof OSDirectory) continue;
-    //                 if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
-
-    //                 // "full" allows both
-    //                 matches.push(child);
+    //                 return null;
     //             }
+    //         } else {
     //         }
+            
+            
+            
+    //         // else {
+    //         //     if (node.children.has(part)) {
+    //         //         node = node.children.get(part);
+    //         //         continue;
+    //         //     }
 
-    //         if (matches.length === 0) return null;
+    //         //     const matches = [];
 
-    //         if (matches.length > 1) {
-    //             throw new OSError(`Ambiguous path segment '${part}'`);
-    //         }
+    //         //     for (const [name, child] of node.children) {
+    //         //         const fileName = name.split(".")[0];
+    //         //         const fileType = name.split(".")[1];
 
-    //         node = matches[0];
+                    
+
+    //         //         if(child instanceof OSFile && (assumption === "file" || assumption === "full")){
+    //         //             if(fileName.startsWith(part)) matches.push(child);
+    //         //         }
+
+    //         //         if(child instanceof OSDirectory && (assumption === "directory" || assumption === "full")){
+    //         //             if(name.startsWith(part)) matches.push(child);
+    //         //         }
+    //         //     }
+
+    //         //     if (matches.length === 0) return null;
+
+    //         //     if (matches.length > 1) {
+    //         //         throw new OSError(`Ambiguous path segment '${part}'`);
+    //         //     }
+
+    //         //     node = matches[0];
+    //         // }
+
+    //             // if(node.children.has(name)){
+    //             //     const child = node.children.get(name);
+    //             //     if(type !== undefined && ((child instanceof OSDirectory && type !== "dir") || (child instanceof OSFile && type !== child.type))){
+    //             //         return null;
+    //             //     }
+    //             //     node = child;
+    //             // } else {
+    //             //     return null;
+    //             // }
+            
+
+    //         // // Exact match always wins
+    //         // if (node.children.has(part)) {
+    //         //     node = node.children.get(part);
+    //         //     continue;
+    //         // }
+
+    //         // const matches = [];
+
+    //         // for (const [name, child] of node.children) {
+    //         //     if (assumption === "none") {
+    //         //         continue;
+    //         //         // const type = part.split(".")[1];
+
+    //         //         // const [checkName, checkType] = [child.name, child.type];
+
+    //         //         // console.log(type, checkType, part)
+
+    //         //         // if (name === checkName && type === checkType) matches.push(child);
+    //         //     } else {
+    //         //         // partial match allowed
+    //         //         if (!name.startsWith(part)) continue;
+
+    //         //         if (assumption === "file" && child instanceof OSDirectory) continue;
+    //         //         if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+
+    //         //         matches.push(child);
+    //         //     }
+    //         // }
+
+    //         // if (matches.length === 0) return null;
+    //         // if (matches.length > 1) {
+    //         //     throw new OSError(`Ambiguous path segment '${part}'`);
+    //         // }
+
+    //         // node = matches[0];
     //     }
 
     //     DiagnosticService.record(
@@ -261,63 +320,106 @@ class FilesystemService {
 
     //     return node;
     // }
-
     static resolvePath(path, assumption = "none") {
-        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+    if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
-        const parts = path.split("/").filter(p => p.length > 0);
-        let node = path.startsWith("/") ? this.root : this.currentDirectory;
+    const parts = path.split("/").filter(p => p.length > 0);
+    let node = path.startsWith("/") ? this.root : this.currentDirectory;
 
-        for (const part of parts) {
-            if (part === ".") continue;
-            if (part === "..") {
-                node = node.parent ?? node;
-                continue;
-            }
+    for (const rawPart of parts) {
+        if (rawPart === ".") continue;
+        if (rawPart === "..") {
+            node = node.parent ?? node;
+            continue;
+        }
 
-            if (!(node instanceof OSDirectory)) return null;
+        if (!(node instanceof OSDirectory)) return null;
 
-            // Exact match always wins
-            if (node.children.has(part)) {
-                node = node.children.get(part);
-                continue;
-            }
+        // Extract name and type from the path segment (e.g. foo.txt → ["foo", "txt"])
+        const [givenName, givenType] = rawPart.split(".");
 
-            const matches = [];
+        const children = node.children;
 
-            for (const [name, child] of node.children) {
+        //
+        // === ASSUMPTION MODE: "none" ===
+        //
+        if (assumption === "none") {
+            if (!children.has(givenName)) return null;
+            const child = children.get(givenName);
 
-                if (assumption === "none") {
-                    const type = part.split(".")[1];
+            // exact file type required
+            if (child instanceof OSFile && child.type !== givenType) return null;
 
-                    const [checkName, checkType] = [child.name, child.type];
+            node = child;
+            continue;
+        }
 
-                    if (name === checkName && type === checkType) matches.push(child);
+        //
+        // === ASSUMPTION MODES WITH PARTIAL MATCHING ===
+        //
+        const matches = [];
+
+        for (const [childName, child] of children) {
+            const fileName = childName.split(".")[0]; // real name
+            const fileType = child instanceof OSFile ? child.type : null;
+
+            const starts = fileName.startsWith(givenName);
+
+            //
+            // ---- DIRECTORY handling ----
+            //
+            if (child instanceof OSDirectory) {
+                if (assumption === "file") {
+                    // directories require exact match only
+                    if (childName === givenName) matches.push(child);
                 } else {
-                    // partial match allowed
-                    if (!name.startsWith(part)) continue;
+                    // "directory" or "full": allow partial match
+                    if (starts) matches.push(child);
+                }
+                continue;
+            }
 
-                    if (assumption === "file" && child instanceof OSDirectory) continue;
-                    if (assumption === "directory" && !(child instanceof OSDirectory)) continue;
+            //
+            // ---- FILE handling ----
+            //
+            if (child instanceof OSFile) {
+                if (assumption === "directory") {
+                    // files require exact name+type under directory assumption
+                    if (fileName === givenName && fileType === givenType) {
+                        matches.push(child);
+                    }
+                    continue;
+                }
+
+                if (assumption === "file" || assumption === "full") {
+                    // match start of filename
+                    if (!starts) continue;
+
+                    // if path includes type, enforce match
+                    if (givenType && fileType !== givenType) continue;
 
                     matches.push(child);
                 }
             }
-
-            if (matches.length === 0) return null;
-            if (matches.length > 1) {
-                throw new OSError(`Ambiguous path segment '${part}'`);
-            }
-
-            node = matches[0];
         }
 
-        DiagnosticService.record(
-            `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"}: ${node.name}`
-        );
+        // resolve matches
+        if (matches.length === 0) return null;
+        if (matches.length > 1) {
+            throw new OSError(`Ambiguous path segment '${rawPart}'`);
+        }
 
-        return node;
+        node = matches[0];
     }
+
+    DiagnosticService.record(
+        `FilesystemService_resolvePath ${path} -> ${
+            node instanceof OSDirectory ? "directory" : "file"
+        }: ${node.name}`
+    );
+
+    return node;
+}
 
     static validationRegex = /^[a-zA-Z0-9_\-\.]+$/;
 
@@ -1581,7 +1683,7 @@ class ConfigService {
     static init(os){
         if(this.#config) return;
         this.os = os;
-        this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")).parse();
+        //this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")).parse();
         DiagnosticService.record("ConfigService_init");
     }
 
@@ -1615,6 +1717,10 @@ function createFilesystem(){
         //     `, 12
         // )
     );
+
+    //FilesystemService.createFile("readme", "txt", "/", ["wow!"])
+
+    console.log(FilesystemService.resolvePath("/c/u", "file"));
 
     //console.log("userfile", new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read().join("")));
 
