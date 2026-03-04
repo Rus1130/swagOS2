@@ -3,8 +3,6 @@ class ConfigService {
     static os = null;
     static enabled = false;
 
-    static name = "ConfigService";
-
     static init(os){
         if(this.os) return;
         this.enabled = true;
@@ -23,10 +21,14 @@ class ConfigService {
         DiagnosticService.record("ConfigService_disable");
     }
 
-    static get(key){
+    static initialized(){
+        return this.#config !== null;
+    }
+
+    static get(key, log = true){
         if(!this.#config) throw new OSError("ConfigService is not initialized");
         if(!this.enabled) throw new OSError("ConfigService is not enabled", 1);
-        DiagnosticService.record(`ConfigService_get ${key}`);
+        if(log) DiagnosticService.record(`ConfigService_get ${key}`);
 
         if(this.#config[key] == undefined) throw new OSError(`Config key "${key}" is not defined in /config/user.conf`);
 
@@ -41,498 +43,11 @@ class ConfigService {
     }
 }
 
-class FilesystemService {
-    static enabled = false;
-    static root = null;
-    static currentDirectory = null;
-    static workingDirectory = "/";
-
-    static init() {
-        if (this.root) return;
-        this.root = new OSDirectory("root");
-        this.currentDirectory = this.root;
-        this.enabled = true;
-        DiagnosticService.record("FilesystemService_init");
-    }
-
-    static enable() {
-        if (this.enabled) return;
-        this.enabled = true;
-        DiagnosticService.record("FilesystemService_enable");
-    }
-
-    static disable() {
-        if (!this.enabled) return;
-        this.enabled = false;
-        DiagnosticService.record("FilesystemService_disable");
-    }
-
-    /**
-     * 
-     * @param {string} path 
-     * @param {"file"|"directory"|"full"|"none"} assumption
-     * @returns 
-     */
-    static resolvePath(path, assumption = "none") {
-    if (!this.enabled) throw new OSError("FilesystemService is disabled");
-
-    const parts = path.split("/").filter(p => p.length > 0);
-    let node = path.startsWith("/") ? this.root : this.currentDirectory;
-
-    for (const rawPart of parts) {
-        if (rawPart === ".") continue;
-        if (rawPart === "..") {
-            node = node.parent ?? node;
-            continue;
-        }
-
-        if (!(node instanceof OSDirectory)) return null;
-
-        // Extract name and type from the path segment (e.g. foo.txt → ["foo", "txt"])
-        const [givenName, givenType] = rawPart.split(".");
-
-        const children = node.children;
-
-        //
-        // === ASSUMPTION MODE: "none" ===
-        //
-        if (assumption === "none") {
-            if (!children.has(givenName)) return null;
-            const child = children.get(givenName);
-
-            // exact file type required
-            if (child instanceof OSFile && child.type !== givenType) return null;
-
-            node = child;
-            continue;
-        }
-
-        //
-        // === ASSUMPTION MODES WITH PARTIAL MATCHING ===
-        //
-        const matches = [];
-
-        for (const [childName, child] of children) {
-            const fileName = childName.split(".")[0]; // real name
-            const fileType = child instanceof OSFile ? child.type : null;
-
-            const starts = fileName.startsWith(givenName);
-
-            //
-            // ---- DIRECTORY handling ----
-            //
-            if (child instanceof OSDirectory) {
-                if (assumption === "file") {
-                    // directories require exact match only
-                    if (childName === givenName) matches.push(child);
-                } else {
-                    // "directory" or "full": allow partial match
-                    if (starts) matches.push(child);
-                }
-                continue;
-            }
-
-            //
-            // ---- FILE handling ----
-            //
-            if (child instanceof OSFile) {
-                if (assumption === "directory") {
-                    // files require exact name+type under directory assumption
-                    if (fileName === givenName && fileType === givenType) {
-                        matches.push(child);
-                    }
-                    continue;
-                }
-
-                if (assumption === "file" || assumption === "full") {
-                    // match start of filename
-                    if (!starts) continue;
-
-                    // if path includes type, enforce match
-                    if (givenType && fileType !== givenType) continue;
-
-                    matches.push(child);
-                }
-            }
-        }
-
-        // resolve matches
-        if (matches.length === 0) return null;
-        if (matches.length > 1) {
-            throw new OSError(`Ambiguous path segment '${rawPart}'`);
-        }
-
-        node = matches[0];
-    }
-
-    DiagnosticService.record(
-        `FilesystemService_resolvePath ${path} -> ${
-            node instanceof OSDirectory ? "directory" : "file"
-        }: ${node.name}`
-    );
-
-    return node;
-}
-
-    static validationRegex = /^[a-zA-Z0-9_\-\.]+$/;
-
-    /**
-     * 
-     * @param {string} name 
-     * @param {string} parentPath 
-     * @returns 
-     */
-    static createDirectory(name, parentPath) {
-        if (!this.enabled) throw new OSError("FilesystemService is disabled");
-
-        if (!this.validationRegex.test(name)) {
-            throw new OSError(`Invalid directory name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
-        }
-
-        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
-        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
-
-        if (parentDir.children.has(name)) {
-            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
-        }
-
-        const dir = new OSDirectory(name, parentDir);
-        parentDir.children.set(name, dir);
-        DiagnosticService.record(`FilesystemService_createDirectory ${name} >> ${parentDir.name}`);
-
-        return dir;
-    }
-
-    /**
-     * 
-     * @param {string} name 
-     * @param {string} type 
-     * @param {string} parentPath 
-     * @param {string[]} content 
-     * @returns 
-     */
-    static createFile(name, type, parentPath, content = []) {
-        if (!this.enabled) throw new OSError("FilesystemService is disabled");
-
-        if (!this.validationRegex.test(name)) {
-            throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
-        }
-
-        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
-        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
-
-        const file = new OSFile(name, type, parentDir, content);
-
-        if (parentDir.children.has(name)) {
-            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
-        }
-
-        parentDir.children.set(name, file);
-        DiagnosticService.record(`FilesystemService_createFile ${name} -> ${parentDir.name}`);
-        return file;
-    }
-
-    /**
-     * 
-     * @param {String} path
-     * @param {"file"|"directory"|"full"|none} assumption 
-     * @returns 
-     */
-    static setWorkingDirectory(path, assumption = "none") {
-        if(!this.enabled) throw new OSError("FilesystemService is disabled");
-        const dir = this.resolvePath(path, assumption);
-        if (!dir || !(dir instanceof OSDirectory)) throw new OSError(`Directory not found: "${path}"`);
-
-        this.currentDirectory = dir;
-        this.workingDirectory = this.getCurrentPath();
-        return true;
-    }
-
-    static getCurrentPath() {
-        if(!this.enabled) return "?";
-        let path = [];
-        let node = this.currentDirectory;
-
-        while (node && node.parent) {
-            path.unshift(node.name);
-            node = node.parent;
-        }
-
-        return "/" + path.join("/");
-    }
-}
-
-class SaviorService {
-    static os = null;
-    static enabled = false;
-
-    static name = "SaviorService";
-
-    static watch(service){
-        setInterval(() => {
-            if(!this.enabled) return;
-            if(service.enabled == false){
-                this.os.savior(`Enabled ${service.name}`);
-                DiagnosticService.record(`SaviorService_save ${service.name}`);
-                OutputService.clear();
-                service.enable();
-                this.os.commandLine();
-            }
-        }, 5000);
-    }
-    static init(os) {
-        if(this.os) return;
-        this.os = os;
-        this.enabled = true;
-        DiagnosticService.record("SaviorService_init");
-
-        SaviorService.watch(CommandExecService);
-        SaviorService.watch(CommandService);
-
-        setInterval(() => {
-            if(!this.enabled) return;
-
-            // get the last line in the console
-            const lines = Array.from(this.os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
-            const lastLine = lines[lines.length - 1];
-            if(lastLine && !lastLine[1].classList.contains("commandline")){
-                this.os.commandLine();
-            }
-        }, 10_000);
-    }
-
-    static enable(){
-        if(this.enabled) return;
-        this.enabled = true;
-        DiagnosticService.record("SaviorService_enable");
-    }
-
-    static disable(){
-        if(!this.enabled) return;
-        this.enabled = false;
-        DiagnosticService.record("SaviorService_disable");
-    }
-}
-
-class OutputService {
-    static buffer = [];
-    static os = null;
-    static enabled = false;
-
-    static name = "OutputService";
-
-    static enable(){
-        this.enabled = true;
-        DiagnosticService.record("OutputService_enable");
-    }
-
-    static disable(){
-        this.enabled = false;
-        DiagnosticService.record("OutputService_disable");
-    }
-
-    static init(os) {
-        if(this.os) return;
-        this.buffer = [];
-        this.os = os;
-        this.enabled = true;
-        DiagnosticService.record("OutputService_init");
-    }
-
-    static add(line) {
-        if(!this.enabled) return;
-        DiagnosticService.record("OutputService_add");
-        this.buffer.push(line);
-    }
-
-    static flush() {
-        if(!this.enabled) return;
-        for(const line of this.buffer){
-            if(line.type === "line") this.os.line(line.content, line.loc);
-            else if(line.type === "error") this.os.error(line.content);
-            else if(line.type === "severe_error") this.os.severe(line.content);
-            else if(line.type === "savior") this.os.savior(line.content);
-            else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
-        }
-        DiagnosticService.record("OutputService_flush");
-        this.buffer.length = 0;
-    }
-
-    static clear() {
-        if(!this.enabled) return;
-        DiagnosticService.record("OutputService_clear");
-        this.buffer.length = 0;
-    }
-
-    static isEmpty() {
-        if(!this.enabled) return true;
-        return this.buffer.length === 0;
-    }
-}
-
-class DiagnosticService {
-    static enabled = false;
-    static os = null;
-
-    static name = "DiagnosticService";
-
-    static diagnosticData = [];
-
-    static enable(){
-        this.enabled = true;
-        DiagnosticService.record("DiagnosticService_enable");
-    }
-
-    static disable(){
-        DiagnosticService.record("DiagnosticService_disable");
-        this.enabled = false;
-    }
-
-    static init(os) {
-        if(this.os) return;
-        this.os = os;
-        this.enabled = true;
-        DiagnosticService.record("DiagnosticService_init");
-    }
-
-    static record(message){
-        if(!this.enabled) return;
-        this.diagnosticData.push({ 
-            type: "record",
-            data: {
-                message: message,
-                timestamp: Date.now(),
-            }
-        });
-    }
-
-    static note(message){
-        if(!this.enabled) return;
-        this.diagnosticData.push({
-            type: "note",
-            data: {
-                message: message,
-            }
-        })
-    }
-
-    static getData(){
-        return this.diagnosticData;
-    }
-}
-
-class CommandExecService {
-    static queue = [];
-    static running = false;
-    static os = null;
-    static enabled = false;
-
-    static name = "CommandExecService";
-
-    static currentAbort = null;
-    static currentReject = null;
-
-    static delay = 50;
-
-    static enable(){
-        this.enabled = true;
-        DiagnosticService.record("CommandExecService_enable");
-    }
-
-    static disable(){
-        this.enabled = false;
-        DiagnosticService.record("CommandExecService_disable");
-    }
-
-    static interrupt(err) {
-        if(!this.enabled) return;
-        if (!this.os) return;
-
-        DiagnosticService.record("CommandExecService_interrupt");
-        this.queue = [];
-        OutputService.buffer.length = 0;
-
-        if (this.currentAbort) {
-            this.currentAbort.abort();
-        }
-    }
-
-    static init(os) {
-        if(this.os) return;
-        this.queue = [];
-        this.running = false;
-        this.os = os;
-        this.enabled = true;
-        DiagnosticService.record("CommandExecService_init");
-    }
-
-    static enqueue(chain) {
-        if(!this.enabled) return;
-        if(!this.os) throw new Error("CommandExecService not initialized with OS instance");
-        return new Promise((resolve, reject) => {
-            DiagnosticService.record("CommandExecService_enqueue "+chain.simplify());
-            this.queue.push({ chain, resolve, reject });
-            this.runNext();
-        });
-    }
-
-    static async runNext() {
-        if(!this.enabled) return;
-        if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
-        if (this.running) return;
-        if (this.queue.length === 0) return;
-
-        this.running = true;
-
-        const { chain, resolve, reject } = this.queue.shift();
-
-        let controller = new AbortController();
-        this.currentAbort = controller;
-        this.currentReject = reject;
-
-        try {
-            let result = await this.os.runChain(chain, controller.signal);
-            if(CommandExecService.delay > 0){
-                await new Promise(r => setTimeout(r, CommandExecService.delay));
-            }
-            DiagnosticService.record("CommandExecService_runNext");
-            resolve(result);
-        } catch (e) {
-            if (e instanceof DOMException && e.name === "AbortError") {
-                OutputService.add({ type: "error", content: "Command execution interrupted." });
-                OutputService.flush();
-                resolve(null);
-            } else if (e instanceof OSError) {
-                DiagnosticService.record("CommandExecService_error executing " + chain.simplify());
-
-                if(e.severity === 0) OutputService.add({ type: "error", content: e.message });
-                else if(e.severity === 1) OutputService.add({ type: "severe_error", content: e.message });
-                resolve(null);
-            } else {
-                DiagnosticService.record("CommandExecService_unexpectedError " + chain.simplify());
-                OutputService.add({ type: "error", content: `An unexpected error occurred. Check console for details.` });
-                console.error(e)
-                resolve(null);
-            }
-        } finally {
-            this.currentAbort = null;
-            this.currentReject = null;
-            this.running = false;
-            // Only continue the queue if we weren't interrupted
-            if (!controller.signal.aborted) {
-                this.runNext();
-            }
-        }
-    }
-}
-
 class CommandService {
     static os = null;
     static enabled = false;
     static commands = new Map();
     static registeredCommands = new Set();
-
-    static name = "CommandService";
 
     static init(os) {
         if(this.os) return;
@@ -710,6 +225,560 @@ class CommandService {
         return { valid: true, error: null, flags };
     }
 }
+
+class FilesystemService {
+    static enabled = false;
+    static root = null;
+    static currentDirectory = null;
+    static workingDirectory = "/";
+
+    static init() {
+        if (this.root) return;
+        this.root = new OSDirectory("root");
+        this.currentDirectory = this.root;
+        this.enabled = true;
+        DiagnosticService.record("FilesystemService_init");
+    }
+
+    static enable() {
+        if (this.enabled) return;
+        this.enabled = true;
+        DiagnosticService.record("FilesystemService_enable");
+    }
+
+    static disable() {
+        if (!this.enabled) return;
+        this.enabled = false;
+        DiagnosticService.record("FilesystemService_disable");
+    }
+
+    /**
+     * 
+     * @param {string} path 
+     * @param {"file"|"directory"|"full"|"none"} assumption
+     * @returns 
+     */
+    static resolvePath(path, assumption = "none") {
+    if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+    const parts = path.split("/").filter(p => p.length > 0);
+    let node = path.startsWith("/") ? this.root : this.currentDirectory;
+
+    for (const rawPart of parts) {
+        if (rawPart === ".") continue;
+        if (rawPart === "..") {
+            node = node.parent ?? node;
+            continue;
+        }
+
+        if (!(node instanceof OSDirectory)) return null;
+
+        // Extract name and type from the path segment (e.g. foo.txt → ["foo", "txt"])
+        const [givenName, givenType] = rawPart.split(".");
+
+        const children = node.children;
+
+        //
+        // === ASSUMPTION MODE: "none" ===
+        //
+        if (assumption === "none") {
+            if (!children.has(givenName)) return null;
+            const child = children.get(givenName);
+
+            // exact file type required
+            if (child instanceof OSFile && child.type !== givenType) return null;
+
+            node = child;
+            continue;
+        }
+
+        //
+        // === ASSUMPTION MODES WITH PARTIAL MATCHING ===
+        //
+        const matches = [];
+
+        for (const [childName, child] of children) {
+            const fileName = childName.split(".")[0]; // real name
+            const fileType = child instanceof OSFile ? child.type : null;
+
+            const starts = fileName.startsWith(givenName);
+
+            //
+            // ---- DIRECTORY handling ----
+            //
+            if (child instanceof OSDirectory) {
+                if (assumption === "file") {
+                    // directories require exact match only
+                    if (childName === givenName) matches.push(child);
+                } else {
+                    // "directory" or "full": allow partial match
+                    if (starts) matches.push(child);
+                }
+                continue;
+            }
+
+            //
+            // ---- FILE handling ----
+            //
+            if (child instanceof OSFile) {
+                if (assumption === "directory") {
+                    // files require exact name+type under directory assumption
+                    if (fileName === givenName && fileType === givenType) {
+                        matches.push(child);
+                    }
+                    continue;
+                }
+
+                if (assumption === "file" || assumption === "full") {
+                    // match start of filename
+                    if (!starts) continue;
+
+                    // if path includes type, enforce match
+                    if (givenType && fileType !== givenType) continue;
+
+                    matches.push(child);
+                }
+            }
+        }
+
+        // resolve matches
+        if (matches.length === 0) return null;
+        if (matches.length > 1) {
+            throw new OSError(`Ambiguous path segment '${rawPart}'`);
+        }
+
+        node = matches[0];
+    }
+
+    DiagnosticService.record(
+        `FilesystemService_resolvePath ${path} -> ${
+            node instanceof OSDirectory ? "directory" : "file"
+        }: ${node.name}`
+    );
+
+    return node;
+}
+
+    static validationRegex = /^[a-zA-Z0-9_\-\.]+$/;
+
+    /**
+     * 
+     * @param {string} name 
+     * @param {string} parentPath 
+     * @returns 
+     */
+    static createDirectory(name, parentPath) {
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        if (!this.validationRegex.test(name)) {
+            throw new OSError(`Invalid directory name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        }
+
+        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
+        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
+
+        if (parentDir.children.has(name)) {
+            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
+        }
+
+        const dir = new OSDirectory(name, parentDir);
+        parentDir.children.set(name, dir);
+        DiagnosticService.record(`FilesystemService_createDirectory ${name} in ${parentDir.name}`);
+
+        return dir;
+    }
+
+    /**
+     * 
+     * @param {string} name 
+     * @param {string} type 
+     * @param {string} parentPath 
+     * @param {string[]} content 
+     * @returns 
+     */
+    static createFile(name, type, parentPath, content = []) {
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        if (!this.validationRegex.test(name)) {
+            throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        }
+
+        const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
+        if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
+
+        const file = new OSFile(name, type, parentDir, content);
+
+        if (parentDir.children.has(name)) {
+            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
+        }
+
+        parentDir.children.set(name, file);
+        DiagnosticService.record(`FilesystemService_createFile ${name} -> ${parentDir.name}`);
+        return file;
+    }
+
+    /**
+     * 
+     * @param {String} path
+     * @param {"file"|"directory"|"full"|none} assumption 
+     * @returns 
+     */
+    static setWorkingDirectory(path, assumption = "none") {
+        if(!this.enabled) throw new OSError("FilesystemService is disabled");
+        const dir = this.resolvePath(path, assumption);
+        if (!dir || !(dir instanceof OSDirectory)) throw new OSError(`Directory not found: "${path}"`);
+
+        this.currentDirectory = dir;
+        this.workingDirectory = this.getCurrentPath();
+        return true;
+    }
+
+    static getCurrentPath() {
+        if(!this.enabled) return "?";
+        let path = [];
+        let node = this.currentDirectory;
+
+        while (node && node.parent) {
+            path.unshift(node.name);
+            node = node.parent;
+        }
+
+        return "/" + path.join("/");
+    }
+}
+
+class SaviorService {
+    static os = null;
+    static enabled = false;
+
+    static watch(service){
+        setInterval(() => {
+            if(!this.enabled) return;
+            if(service.enabled == false){
+                this.os.savior(`Enabled ${service.name}`);
+                DiagnosticService.record(`SaviorService_save ${service.name}`);
+                OutputService.clear();
+                service.enable();
+                this.os.commandLine();
+            }
+        }, 5000);
+    }
+    static init(os) {
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("SaviorService_init");
+
+        SaviorService.watch(CommandExecService);
+        SaviorService.watch(CommandService);
+
+        setInterval(() => {
+            if(!this.enabled) return;
+
+            // get the last line in the console
+            const lines = Array.from(this.os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
+            const lastLine = lines[lines.length - 1];
+            if(lastLine && !lastLine[1].classList.contains("commandline")){
+                this.os.commandLine();
+            }
+        }, 10_000);
+    }
+
+    static enable(){
+        if(this.enabled) return;
+        this.enabled = true;
+        DiagnosticService.record("SaviorService_enable");
+    }
+
+    static disable(){
+        if(!this.enabled) return;
+        this.enabled = false;
+        DiagnosticService.record("SaviorService_disable");
+    }
+}
+
+class OutputService {
+    static buffer = [];
+    static os = null;
+    static enabled = false;
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("OutputService_enable");
+    }
+
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("OutputService_disable");
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.buffer = [];
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("OutputService_init");
+    }
+
+    static add(line) {
+        if(!this.enabled) return;
+        DiagnosticService.record("OutputService_add");
+        this.buffer.push(line);
+    }
+
+    static flush() {
+        if(!this.enabled) return;
+        for(const line of this.buffer){
+            if(line.type === "line") this.os.line(line.content, line.loc);
+            else if(line.type === "error") this.os.error(line.content);
+            else if(line.type === "severe_error") this.os.severe(line.content);
+            else if(line.type === "savior") this.os.savior(line.content);
+            else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
+        }
+        DiagnosticService.record("OutputService_flush");
+        this.buffer.length = 0;
+    }
+
+    static clear() {
+        if(!this.enabled) return;
+        DiagnosticService.record("OutputService_clear");
+        this.buffer.length = 0;
+    }
+
+    static isEmpty() {
+        if(!this.enabled) return true;
+        return this.buffer.length === 0;
+    }
+}
+
+class DiagnosticService {
+    static enabled = false;
+    static os = null;
+
+    static diagnosticData = [];
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("DiagnosticService_enable");
+    }
+
+    static disable(){
+        DiagnosticService.record("DiagnosticService_disable");
+        this.enabled = false;
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("DiagnosticService_init");
+    }
+
+    static record(message){
+        if(!this.enabled) return;
+
+        const stack = new Error().stack.split("\n").slice(2)
+        .map(line => 
+            line
+            .replace(/\(https?:\/\/.*?\)/, "")
+            .replace(/^\s*at\s*/, "")
+            .replace(/^\s*async\s*/, "")
+            .replace(/https?:\/\/.*?$/, "")
+            .replace("Object.fn", "CommandExecService.commandFunction")
+            .replace(/Array\.forEach (\(<anonymous>\))?/, "")
+            .replace(/new Promise (\(<anonymous>\))?/, "")
+            .replace(/^OS\./, "OpSys.")
+            .replace(/^new OS/, "OpSys")
+            .trim()
+        ).filter(line => line.length > 0).reverse();
+
+        // if last line is "new OS", remove it
+
+        const replacer = ServiceManager.services.map(s => [s.name, s.abbreviation]);
+
+        stack.forEach((line, index) => {
+            replacer.forEach(([full, abbr]) => {
+                line = line.replace(full, abbr);
+            });
+            stack[index] = line;
+        });
+
+        this.diagnosticData.push({ 
+            type: "record",
+            data: {
+                message: message,
+                timestamp: Date.now(),
+                stack: stack,
+            }
+        });
+    }
+
+    static note(message){
+        if(!this.enabled) return;
+        this.diagnosticData.push({
+            type: "note",
+            data: {
+                message: message,
+            }
+        })
+    }
+
+    static getData(){
+        return this.diagnosticData;
+    }
+}
+
+class CommandExecService {
+    static queue = [];
+    static running = false;
+    static os = null;
+    static enabled = false;
+
+    static currentAbort = null;
+    static currentReject = null;
+
+    static delay = 50;
+
+    static enable(){
+        this.enabled = true;
+        DiagnosticService.record("CommandExecService_enable");
+    }
+
+    static disable(){
+        this.enabled = false;
+        DiagnosticService.record("CommandExecService_disable");
+    }
+
+    static interrupt(err) {
+        if(!this.enabled) return;
+        if (!this.os) return;
+
+        DiagnosticService.record("CommandExecService_interrupt");
+        this.queue = [];
+        OutputService.buffer.length = 0;
+
+        if (this.currentAbort) {
+            this.currentAbort.abort();
+        }
+    }
+
+    static init(os) {
+        if(this.os) return;
+        this.queue = [];
+        this.running = false;
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("CommandExecService_init");
+    }
+
+    static enqueue(chain) {
+        if(!this.enabled) return;
+        if(!this.os) throw new Error("CommandExecService not initialized with OS instance");
+        return new Promise((resolve, reject) => {
+            DiagnosticService.record("CommandExecService_enqueue "+chain.simplify());
+            this.queue.push({ chain, resolve, reject });
+        });
+    }
+
+    static async runNext() {
+        if(!this.enabled) return;
+        if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
+        if (this.running) return;
+        if (this.queue.length === 0) return;
+
+        this.running = true;
+
+        const { chain, resolve, reject } = this.queue.shift();
+
+        let controller = new AbortController();
+        this.currentAbort = controller;
+        this.currentReject = reject;
+
+        try {
+            let result = await this.os.runChain(chain, controller.signal);
+            if(CommandExecService.delay > 0){
+                await new Promise(r => setTimeout(r, CommandExecService.delay));
+            }
+            DiagnosticService.record("CommandExecService_runNext");
+            resolve(result);
+        } catch (e) {
+            if (e instanceof DOMException && e.name === "AbortError") {
+                OutputService.add({ type: "error", content: "Command execution interrupted." });
+                OutputService.flush();
+                resolve(null);
+            } else if (e instanceof OSError) {
+                DiagnosticService.record("CommandExecService_error executing " + chain.simplify());
+
+                if(e.severity === 0) OutputService.add({ type: "error", content: e.message });
+                else if(e.severity === 1) OutputService.add({ type: "severe_error", content: e.message });
+                resolve(null);
+            } else {
+                DiagnosticService.record("CommandExecService_unexpectedError " + chain.simplify());
+                OutputService.add({ type: "error", content: `An unexpected error occurred. Check console for details.` });
+                console.error(e)
+                resolve(null);
+            }
+        } finally {
+            this.currentAbort = null;
+            this.currentReject = null;
+            this.running = false;
+            // Only continue the queue if we weren't interrupted
+            if (!controller.signal.aborted) {
+                this.runNext();
+            }
+        }
+    }
+}
+
+class ServiceManager {
+    static services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService];
+}
+
+ServiceManager.services.forEach(service => {
+    switch(service){
+        case ConfigService: {
+            service.abbreviation = "Csrv";
+            service.shortName = "config";
+            service.critial = true;
+        } break;
+
+        case FilesystemService: {
+            service.abbreviation = "Fsrv";
+            service.shortName = "filesystem";
+            service.critical = true;
+        } break;
+
+        case SaviorService: {
+            service.abbreviation = "Ssrv";
+            service.shortName = "savior";
+            service.critical = true;
+        } break;
+
+        case OutputService: {
+            service.abbreviation = "Psrv";
+            service.shortName = "output";
+            service.critical = false;
+        } break;
+
+        case DiagnosticService: {
+            service.abbreviation = "Dsrv";
+            service.shortName = "diagnostic";
+            service.critical = false;
+        } break;
+
+        case CommandExecService: {
+            service.abbreviation = "Xsrv";
+            service.shortName = "commandexec";
+            service.critical = true;
+        } break;
+
+        case CommandService: {
+            service.abbreviation = "Msrv";
+            service.shortName = "command";
+            service.critical = true;
+        } break;
+    }
+});
 
 class SwagObjectParser {
     /**
@@ -905,6 +974,14 @@ function defineCommands(){
                 description: "Clear the service logs.",
                 required: false,
                 datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "abbreviate",
+                short: "a",
+                description: "Abbreviate service names in logs (e.g. OutputService -> Psrv)",
+                required: false,
+                datatype: "boolean",
             }
         ]
     }, (params, os, signal) => {
@@ -912,6 +989,7 @@ function defineCommands(){
         if(action === "logs"){
             if(params.flags.clear){
                 DiagnosticService.diagnosticData.length = 0;
+                return;
             }
 
             const uncompressed = [];
@@ -972,19 +1050,16 @@ function defineCommands(){
                 if (!m) return { type: "line", content: x, loc: "" };
                 return { type: "line", content: m[2], loc: "["+m[1]+"]" };
             });
-
-            // split the timestamp and the rest of the line and put the timestamp in the loc part of the line
-
-
-            return compressed.map(x => ({ type: "line", content: x, loc: "" }));
         } else if(action === "list"){
-
-            const services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService];
+            const services = ServiceManager.services;
             const lines = [];
-            const max = Math.max(...services.map(s => s.name.length));
 
-            services.forEach(service => {
-                lines.push({ type: "html", content: `${service.name.padEnd(max, " ")} : ${service.enabled ? "<span class='enabled'>ENABLED</span>" : "<span class='disabled'>DISABLED</span>"}`, loc: "" });
+            const renderedNames = services.map(s => `(${s.abbreviation}) ${s.name}`);
+            const max = renderedNames.reduce((max, name) => Math.max(max, name.length), 0);
+
+            services.forEach((service, i) => {
+                const name = renderedNames[i].padEnd(max, " ");
+                lines.push({ type: "html", content: `${name} : ${service.enabled ? "<span class='enabled'>ENABLED</span>" : "<span class='disabled'>DISABLED</span>"}`, loc: "" });
             });
 
             return lines;
@@ -993,31 +1068,40 @@ function defineCommands(){
             const serviceName = params.args[1];
             if(!serviceName) return { type: "error", content: "Service name is required for enable/disable action" };
 
-            const serviceMap = {
-                "output": OutputService,
-                "commandexec": CommandExecService,
-                "command": CommandService,
-                "diagnostic": DiagnosticService,
-                "savior": SaviorService,
-                "filesystem": FilesystemService,
-                "config": ConfigService,
-            };
+            const validServices = ServiceManager.services.map(x => x.shortName)
 
+            // const serviceMap = {
+            //     "output": OutputService,
+            //     "commandexec": CommandExecService,
+            //     "command": CommandService,
+            //     "diagnostic": DiagnosticService,
+            //     "savior": SaviorService,
+            //     "filesystem": FilesystemService,
+            //     "config": ConfigService,
+            // };
 
-            const criticalServices = ["commandexec", "savior", "command", "filesystem", "config"];
+            if(!validServices.includes(serviceName.toLowerCase())){
+                return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${validServices.join(", ")}` };
+            }
 
-            const service = serviceMap[serviceName.toLowerCase()];
-
-            if(!service) return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${Object.keys(serviceMap).join(", ")}` };
             if(action === "enable"){
-                service.enable();
-                return { type: "line", content: `Enabled ${serviceName} service`, loc: "" };
+                ServiceManager.services.forEach(service => {
+                    if(service.shortName === serviceName.toLowerCase()){
+                        service.enable();
+                        OutputService.add({ type: "line", content: `Enabled ${service.name} service`, loc: "" });
+                        return;
+                    }
+                });
             } else {
-                if(criticalServices.includes(serviceName.toLowerCase()) && !params.flags.confirm){
-                    return { type: "error", content: `The "${serviceName}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
-                }
-                service.disable();
-                return { type: "line", content: `Disabled ${serviceName} service`, loc: "" };
+                ServiceManager.services.forEach(service => {
+                    if(service.shortName === serviceName.toLowerCase()){
+                        if(service.critical && !params.flags.confirm){
+                            return { type: "error", content: `The "${service.name}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
+                        }
+                        service.disable();
+                        return { type: "line", content: `Disabled ${service.name} service`, loc: "" };
+                    }
+                });
             }
         }
     });
@@ -1577,6 +1661,7 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
+            abbreviate_service_names_in_logs = true
             `, 12
         ).split("\n")
     );
@@ -2011,6 +2096,7 @@ class OS {
         CommandExecService.enqueue(this.parseCommand(command));
         CommandExecService.enqueue(this.parseCommand("obuffer"));
         CommandExecService.enqueue(this.parseCommand("commandline"));
+        CommandExecService.runNext();
     }
 
     parseCommand(string){
