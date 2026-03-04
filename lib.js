@@ -395,14 +395,25 @@ class DiagnosticService {
         DiagnosticService.record("DiagnosticService_init");
     }
 
-    static record(action){
+    static record(message){
         if(!this.enabled) return;
-        this.diagnosticData.push({ action, timestamp: Date.now() });
+        this.diagnosticData.push({ 
+            type: "record",
+            data: {
+                message: message,
+                timestamp: Date.now(),
+            }
+        });
     }
 
-    static note(action){
+    static note(message){
         if(!this.enabled) return;
-        this.diagnosticData.push({ action: `note: ${action}`, timestamp: Date.now() });
+        this.diagnosticData.push({
+            type: "note",
+            data: {
+                message: message,
+            }
+        })
     }
 
     static getData(){
@@ -902,7 +913,18 @@ function defineCommands(){
             if(params.flags.clear){
                 DiagnosticService.diagnosticData.length = 0;
             }
-            const uncompressed = DiagnosticService.getData().map(entry => `[${os.timestamp('d/mn/Y h:m:s.l', entry.timestamp)}] ${entry.action}`); //
+
+            const uncompressed = [];
+
+            const timestamp = ConfigService.get("timestamp_template");
+
+            DiagnosticService.getData().forEach(entry => {
+                if(entry.type === "record"){
+                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}`);
+                } else if(entry.type === "note"){
+                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] [NOTE] ${entry.data.message}`);
+                }
+            });
 
             const compressed = [];
             let increment = 0;
@@ -1443,7 +1465,7 @@ function defineCommands(){
         schema: [
             {
                 type: "positional",
-                name: "directory_path",
+                name: "path",
                 description: "The path of the directory to change to.",
                 required: true,
             },
