@@ -1745,22 +1745,7 @@ function defineCommands(){
         return htmlLines;
     });
 
-    CommandService.defineCommand("postponetest", {
-        options: {
-            description: "Outputs a test of the postponed command execution",
-            hidden: true
-        },
-        schema: [],
-    },  ({args, flags}, os, signal) => {
-        CommandExecService.postpone();
-
-        setTimeout(() => {
-            CommandExecService.continue();
-        }, 5000)
-
-    });
-
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "postponetest"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
