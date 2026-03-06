@@ -620,11 +620,12 @@ class DiagnosticService {
             .replace(/^\s*at\s*/, "")
             .replace(/^\s*async\s*/, "")
             .replace(/https?:\/\/.*?$/, "")
-            .replace("Object.fn", "CommandExecService.commandFunction")
+            .replace("Object.fn", "CommandExecService.execute")
             .replace(/Array\.forEach (\(<anonymous>\))?/, "")
             .replace(/new Promise (\(<anonymous>\))?/, "")
             .replace(/^OS\./, "OpSys.")
             .replace(/^new OS/, "OpSys")
+            .replace("HTMLDivElement.<anonymous>", "DOM")
             .trim()
         ).filter(line => line.length > 0).reverse();
 
@@ -642,7 +643,7 @@ class DiagnosticService {
         const msg = { 
             type: "record",
             data: {
-                message: message,
+                message,
                 timestamp: Date.now(),
                 stack: stack,
             }
@@ -1021,9 +1022,9 @@ function defineCommands(){
             },
             {
                 type: "flag",
-                name: "abbreviate",
-                short: "a",
-                description: "Abbreviate service names in logs (e.g. OutputService -> Psrv)",
+                name: "trace",
+                short: "t",
+                description: "Trace service logs.",
                 required: false,
                 datatype: "boolean",
             }
@@ -1042,7 +1043,7 @@ function defineCommands(){
 
             DiagnosticService.getData().forEach(entry => {
                 if(entry.type === "record"){
-                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}`);
+                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}${params.flags.trace ? `\n    ${entry.data.stack.join(" -> ")}` : ""}`);
                 } else if(entry.type === "note"){
                     uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] [NOTE] ${entry.data.message}`);
                 }
