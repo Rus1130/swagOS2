@@ -701,6 +701,24 @@ class CommandExecService {
         }
     }
 
+    static postpone(){
+        if(!this.enabled) return;
+        CommandExecService.queue.length = 0;
+        DiagnosticService.record("CommandExecService_postpone");
+    }
+
+    static continue(){
+        if(!this.enabled) return;
+        if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
+
+        //CommandExecService.queue.length = 0;
+
+        DiagnosticService.record("CommandExecService_continue");
+        this.enqueue(this.os.parseCommand("obuffer"));
+        this.enqueue(this.os.parseCommand("commandline"));
+        this.runNext();
+    }
+
     static init(os) {
         if(this.os) return;
         this.queue = [];
@@ -1725,10 +1743,24 @@ function defineCommands(){
         }
 
         return htmlLines;
+    });
+
+    CommandService.defineCommand("postponetest", {
+        options: {
+            description: "Outputs a test of the postponed command execution",
+            hidden: true
+        },
+        schema: [],
+    },  ({args, flags}, os, signal) => {
+        CommandExecService.postpone();
+
+        setTimeout(() => {
+            CommandExecService.continue();
+        }, 5000)
 
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "postponetest"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
