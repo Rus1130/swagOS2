@@ -1,23 +1,34 @@
 <style>
-    ::root {
-        --terminal-background: #000000;
-        --loc-background: #000000;
-        --loc-color: #ffffff;
-        --error-background: #ff0000;
-        --error-color: #ffffff;
-        --savior-background: #5a5a5a;
-        --savior-color: #ffffff;
-        --enabled-background: transparent;
-        --enabled-color: #90ee90;
-        --disabled-background: transparent;
-        --disabled-color: #ff0000;
-        --highlight-background: #d862ff;
-        --highlight-color: #ffffff;
+    /* :root {
+        --terminal_background: #000000;
 
-    }
+        --loc_background: #000000;
+        --loc_color: #ffffff;
+
+        --line_background: #000000;
+        --line_color: #ffffff;
+
+        --error_background: #ff0000;
+        --error_color: #ffffff;
+
+        --severe_error_background: #8b0000;
+        --severe_error_color: #ffffff;
+
+        --savior_background: #5a5a5a;
+        --savior_color: #ffffff;
+
+        --enabled_background: transparent;
+        --enabled_color: #90ee90;
+
+        --disabled_background: transparent;
+        --disabled_color: #ff0000;
+
+        --highlight_background: #d862ff;
+        --highlight_color: #ffffff;
+    } */
 
     body {
-        background-color: black;
+        background-color: var(--terminal_background);
         font-family: monospace;
         font-size: 12px;
         line-height: 12px;
@@ -26,36 +37,36 @@
     .line {
         cursor: default;
         display: flex;
-        padding-bottom: 0.8px;
+        margin-bottom: 2px;
     }
 
     .line span {
-        background-color: black;
-        color: white;
+        background-color: var(--loc_background);
+        color: var(--loc_color);
         margin-right: 6px;
         white-space: pre;
     }
 
     .line .error {
-        background-color: red;
-        color: white;
+        background-color: var(--error_background);
+        color: var(--error_color);
     }
 
     .line .severe {
-        background-color: darkred;
-        color: white;
+        background-color: var(--severe_error_background);
+        color: var(--severe_error_color);
         font-weight: bold;
     }
 
     .line .savior {
-        background-color: rgb(90, 90, 90);
-        color: rgb(255, 255, 255);
+        background-color: var(--savior_background);
+        color: var(--savior_color);
         font-weight: bold;
     }
 
     .line div {
-        background-color: black;
-        color: white;
+        background-color: var(--line_background);
+        color: var(--line_color);
         white-space: pre-wrap;
         overflow-wrap: anywhere;
         width: 100%;
@@ -68,18 +79,18 @@
     }
 
     .line .enabled {
-        color: lightgreen;
-        background-color: transparent;
+        color: var(--enabled_color);
+        background-color: var(--enabled_background);
     }
 
     .line .disabled {
-        color: red;
-        background-color: transparent;
+        color: var(--disabled_color);
+        background-color: var(--disabled_background);
     }
 
     .line .highlight {
-        background-color: #d862ff;
-        color: #ffffff;
+        background-color: var(--highlight_background);
+        color: var(--highlight_color);
         margin-right: 0;
         height: 12px;
     }

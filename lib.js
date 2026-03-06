@@ -1,3 +1,39 @@
+class ColorService {
+    static enabled = false;
+    static os = null;
+
+    static init(os) {
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("ColorService_init");
+        ColorService.update();
+    }
+
+    static enable() {
+        this.enabled = true;
+        DiagnosticService.record("ColorService_enable");
+    }
+
+    static disable() {
+        this.enabled = false;
+        DiagnosticService.record("ColorService_disable");
+    }
+
+    static update(){
+        if(!this.enabled) return;
+
+        const paletteFile = FilesystemService.resolvePath("/config/palette.conf");
+
+        if(!paletteFile) throw new OSError("Palette configuration file not found at /config/palette.conf");
+
+        const paletteData = new SwagObjectParser(paletteFile.read()).parse();
+
+        for(const [key, value] of Object.entries(paletteData)){
+            document.documentElement.style.setProperty(`--${key}`, value);
+        }
+    }
+}
+
 class ConfigService {
     static #config = null;
     static os = null;
@@ -69,7 +105,7 @@ class CommandService {
     static defineCommand(name, body, fn){
         if(!this.enabled) return;
         this.commands.set(name, {body, fn});
-        DiagnosticService.record(`CommandService_define ${name}`);
+        // DiagnosticService.record(`CommandService_define ${name}`);
 
         if(body.options && body.options.alias){
             let aliasBody = structuredClone(body);
@@ -125,7 +161,7 @@ class CommandService {
         commandNames.add(name);
         if(entry.body.options.alias) commandNames.add(entry.body.options.alias);
 
-        DiagnosticService.record(`CommandService_register ${name}`);
+        // DiagnosticService.record(`CommandService_register ${name}`);
         CommandService.registeredCommands.add(commandNames);
     }
 
@@ -603,14 +639,16 @@ class DiagnosticService {
             stack[index] = line;
         });
 
-        this.diagnosticData.push({ 
+        const msg = { 
             type: "record",
             data: {
                 message: message,
                 timestamp: Date.now(),
                 stack: stack,
             }
-        });
+        }
+
+        this.diagnosticData.push(msg);
     }
 
     static note(message){
@@ -731,7 +769,7 @@ class CommandExecService {
 }
 
 class ServiceManager {
-    static services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService];
+    static services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService, ColorService];
 }
 
 ServiceManager.services.forEach(service => {
@@ -776,6 +814,12 @@ ServiceManager.services.forEach(service => {
             service.abbreviation = "Msrv";
             service.shortName = "command";
             service.critical = true;
+        } break;
+
+        case ColorService: {
+            service.abbreviation = "Rsrv";
+            service.shortName = "color";
+            service.critical = false;
         } break;
     }
 });
@@ -1054,7 +1098,7 @@ function defineCommands(){
             const services = ServiceManager.services;
             const lines = [];
 
-            const renderedNames = services.map(s => `(${s.abbreviation}) ${s.name}`);
+            const renderedNames = services.map(s => `${s.name}`);
             const max = renderedNames.reduce((max, name) => Math.max(max, name.length), 0);
 
             services.forEach((service, i) => {
@@ -1070,38 +1114,32 @@ function defineCommands(){
 
             const validServices = ServiceManager.services.map(x => x.shortName)
 
-            // const serviceMap = {
-            //     "output": OutputService,
-            //     "commandexec": CommandExecService,
-            //     "command": CommandService,
-            //     "diagnostic": DiagnosticService,
-            //     "savior": SaviorService,
-            //     "filesystem": FilesystemService,
-            //     "config": ConfigService,
-            // };
-
             if(!validServices.includes(serviceName.toLowerCase())){
                 return { type: "error", content: `Unknown service: "${serviceName}". Valid services are: ${validServices.join(", ")}` };
             }
 
             if(action === "enable"){
-                ServiceManager.services.forEach(service => {
-                    if(service.shortName === serviceName.toLowerCase()){
+                const serviceShort = params.args[1]
+
+                for(const service of ServiceManager.services){
+                    if(service.shortName === serviceShort.toLowerCase()){
                         service.enable();
-                        OutputService.add({ type: "line", content: `Enabled ${service.name} service`, loc: "" });
-                        return;
+                        return { type: "line", content: `Enabled ${service.name} service`, loc: "" };
                     }
-                });
-            } else {
-                ServiceManager.services.forEach(service => {
-                    if(service.shortName === serviceName.toLowerCase()){
+                }
+            } else if(action === "disable"){
+                const serviceShort = params.args[1]
+
+                for(const service of ServiceManager.services){
+                    if(service.shortName === serviceShort.toLowerCase()){
                         if(service.critical && !params.flags.confirm){
                             return { type: "error", content: `The "${service.name}" service is critical for the operation of the OS. Use --confirm flag to confirm that you want to disable it.` };
+                        } else {
+                            service.disable();
+                            return { type: "line", content: `Disabled ${service.name} service`, loc: "" };
                         }
-                        service.disable();
-                        return { type: "line", content: `Disabled ${service.name} service`, loc: "" };
                     }
-                });
+                }
             }
         }
     });
@@ -1629,7 +1667,7 @@ function defineCommands(){
     CommandService.defineCommand("time", {
         options: {
             description: "Outputs the current timestamp",
-            alias: "time"
+            alias: "time",
         },
         schema: [
             {
@@ -1644,7 +1682,52 @@ function defineCommands(){
         return { type: "line", content: os.timestamp(template), loc: "" };
     })
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time"]);
+    CommandService.defineCommand("colortest", {
+        options: {
+            description: "Outputs a test of all colors in the palette",
+            hidden: true
+        },
+        schema: [],
+    }, ({args, flags}, os, signal) => {
+        const palette = FilesystemService.resolvePath("/config/palette.conf");
+
+        if(!(palette instanceof OSFile)) throw new OSError(`Palette file not found at /config/palette.conf`);
+
+        const htmlLines = [];
+
+        const paletteFile = new SwagObjectParser(palette.read()).parse();
+
+        function getContrastingColor(hex) {
+            hex = hex.replace("#", "");
+
+            let r = parseInt(hex.substring(0, 2), 16) / 255;
+            let g = parseInt(hex.substring(2, 4), 16) / 255;
+            let b = parseInt(hex.substring(4, 6), 16) / 255;
+
+            [r, g, b] = [r, g, b].map(c =>
+                c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+            );
+
+            const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+            return luminance > 0.179 ? "#000000" : "#ffffff";
+        }
+
+        for(const [key, value] of Object.entries(paletteFile)){
+            if(key.endsWith("_background")){
+                const name = key.replace("_background", "");
+                htmlLines.push({type: "html", content: `<span style="color: ${getContrastingColor(value)}; background-color: ${value}">${key}</span>`})
+            } else if(key.endsWith("_color")){
+                const name = key.replace("_color", "");
+                htmlLines.push({type: "html", content: `<span style="color: ${value}; background-color: ${getContrastingColor(value)}">${key}</span>`})
+            }
+        }
+
+        return htmlLines;
+
+    });
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -1654,6 +1737,7 @@ function normalizeIndentation(string, indentSize = 4){
 }
 
 function createFilesystem(){
+    DiagnosticService.note("Creating filesystem...");
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("config", "/")
@@ -1665,6 +1749,38 @@ function createFilesystem(){
             `, 12
         ).split("\n")
     );
+    FilesystemService.createFile("palette", "conf", "/config",
+        normalizeIndentation(
+            `
+            terminal_background = "#000000"
+
+            loc_background = "#000000"
+            loc_color = "#FFFFFF"
+
+            line_background = "#000000"
+            line_color = "#FFFFFF"
+
+            error_background = "#FF0000"
+            error_color = "#FFFFFF"
+
+            severe_error_background = "#8B0000"
+            severe_error_color = "#FFFFFF"
+
+            savior_background = "#5a5a5a"
+            savior_color = "#FFFFFF"
+
+            enabled_background = "transparent"
+            enabled_color = "#90ee90"
+
+            disabled_background = "transparent"
+            disabled_color = "#ff5e5e"
+
+            highlight_background = "#d862ff"
+            highlight_color = "#FFFFFF"
+            `, 12
+        ).split("\n")
+    );
+
     DiagnosticService.enable();
 }
 
@@ -1798,6 +1914,7 @@ class OS {
 
     constructor(elem){
         this.elem = elem;
+        this.start = performance.now();
         DiagnosticService.init(this);
         CommandService.init(this);
         defineCommands();
@@ -1808,6 +1925,10 @@ class OS {
         FilesystemService.init(this);
         createFilesystem();
         ConfigService.init(this);
+        ColorService.init(this);
+        this.end = performance.now();
+
+        console.log(`OS initialized in ${this.end - this.start}ms`);
 
         function getRealColors(el) {
             let current = el;
