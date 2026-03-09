@@ -22,7 +22,13 @@ class ColorService {
     static update(){
         if(!this.enabled) return;
 
-        const paletteFile = FilesystemService.resolvePath("/config/palette.conf");
+        const palette = ConfigService.get("color_palette", false);
+
+        if(palette === undefined || palette === null || palette === ""){
+            throw new OSError("Color palette is not defined in /config/user.conf");
+        }
+
+        const paletteFile = FilesystemService.resolvePath(`/data/palettes/${palette}.conf`, "file");
 
         if(!paletteFile) throw new OSError("Palette configuration file not found at /config/palette.conf");
 
@@ -102,6 +108,13 @@ class CommandService {
         DiagnosticService.record("CommandService_disable");
     }
 
+    /**
+     * 
+     * @param {string}
+     * @param {*} body 
+     * @param {*} fn 
+     * @returns 
+     */
     static defineCommand(name, body, fn){
         if(!this.enabled) return;
         this.commands.set(name, {body, fn});
@@ -979,12 +992,23 @@ class OSError extends Error {
 }
 
 class OSFile {
+    static calculateSize(data){
+        return new TextEncoder().encode(data.join("\n")).byteLength;
+    }
+
     #content = [];
+    #size = 0;
+
     constructor(name, type, parent, content = []) {
         this.name = name;
         this.type = type;
         this.parent = parent; // parent directory
         this.#content = content;
+        this.#size = OSFile.calculateSize(content);
+    }
+
+    fullName() {
+        return `${this.name}.${ this.type}`;
     }
 
     read() {
@@ -993,6 +1017,33 @@ class OSFile {
 
     write(newContent) {
         this.#content = newContent;
+        this.#size = OSFile.calculateSize(newContent);
+    }
+
+    getSize(formatted = false){
+
+        if(formatted == false) return this.#size;
+
+        const total = this.#size;
+
+        if (total < 1024) {
+            // B → KB
+            return `${total} B`;
+        }
+        else if (total < 1024 * 1024) {
+            const kb = total / 1024;
+            return `${kb.toFixed(2)} KB (${total} B)`;
+        }
+        else if (total < 1024 * 1024 * 1024) {
+            const kb = total / 1024;
+            const mb = total / (1024 * 1024);
+            return `${mb.toFixed(2)} MB (${kb} KB)`;
+        }
+        else {
+            const mb = total / (1024 * 1024);
+            const gb = total / (1024 * 1024 * 1024);
+            return `${gb.toFixed(2)} GB (${mb} MB)`;
+        }
     }
 }
 
@@ -1026,7 +1077,7 @@ function defineCommands(){
             {
                 type: "flag",
                 name: "confirm",
-                description: "Some services are critical for the operation of the OS. Use this flag to confirm that you want to enable/disable such services",
+                description: "Some services are critical for the operation of the OS. Use this flag to confirm that you want to disable such services",
                 required: false,
                 datatype: "boolean",
             },
@@ -1639,7 +1690,7 @@ function defineCommands(){
         })
         children.entries().forEach(([name, child]) => {
             if(child instanceof OSFile){
-                lines.push({ type: "line", content: `       ${child.name}.${child.type}`, loc: "" });
+                lines.push({ type: "line", content: `       ${child.fullName()}`, loc: "" });
             }
         })
 
@@ -1663,17 +1714,20 @@ function defineCommands(){
                 required: true,
             },
         ]
-    }, ({args, flags}, os, signal) => {
+    }, ({args, pipe, flags}, os, signal) => {
         const path = args[0];
 
         try {
             const file = FilesystemService.resolvePath(path, "full");
             if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
-            OutputService.add({ type: "line", content: `--- Contents of "${file.name}.${file.type}" ---`, loc: "" });
+
+            const lines = [{ type: "line", content: `--- Contents of "${file.fullName()}" ---`, loc: "" }];
 
             file.read().forEach(line => {
-                OutputService.add({ type: "line", content: line, loc: ":" });
+                lines.push({ type: "line", content: line, loc: ":" });
             })
+
+            return lines;
         } catch (e) {
             if(e instanceof OSError) return { type: "error", content: e.message, loc: "" };
             else { 
@@ -1745,7 +1799,35 @@ function defineCommands(){
         return htmlLines;
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest"]);
+    CommandService.defineCommand("fileinfo", {
+        options: {
+            description: "Outputs information about a file",
+            alias: "fi",
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "file_path",
+                description: "The path of the file to get information about",
+                required: true,
+                assumption: "full"
+            },
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        const file = FilesystemService.resolvePath(path, "full");
+
+        if(!(file instanceof OSFile)) return { type: "error", content: `"${path}" is not a file`, loc: "" };
+
+        return [
+            { type: "line", content: `File name : ${file.name}`, loc: "" },
+            { type: "line", content: `File type : ${file.type}`, loc: "" },
+            { type: "line", content: `     Size : ${file.getSize(true)}`, loc: "" },
+        ]
+    })
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -1759,15 +1841,20 @@ function createFilesystem(){
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("config", "/")
+    FilesystemService.createDirectory("data", "/")
+    FilesystemService.createDirectory("palettes", "/data")
+
     FilesystemService.createFile("user", "conf", "/config",
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
             abbreviate_service_names_in_logs = true
+            color_palette = "default"
             `, 12
         ).split("\n")
     );
-    FilesystemService.createFile("palette", "conf", "/config",
+
+    FilesystemService.createFile("default", "conf", "/data/palettes", 
         normalizeIndentation(
             `
             terminal_background = "#000000"
@@ -1796,8 +1883,7 @@ function createFilesystem(){
             highlight_background = "#d862ff"
             highlight_color = "#FFFFFF"
             `, 12
-        ).split("\n")
-    );
+        ).split("\n"))
 
     DiagnosticService.enable();
 }
@@ -2022,6 +2108,8 @@ class OS {
                 DiagnosticService.record("OS_runChain_aborted");
                 throw new DOMException("Aborted", "AbortError");
             }
+
+            signal.chain = { current: i, total: chain.parts.length, chain };
 
             const result = await this.runSingle(chain.parts[i], signal, pipe);
 
