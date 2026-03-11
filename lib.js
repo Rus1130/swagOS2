@@ -1769,7 +1769,7 @@ function defineCommands(){
         ],
     }, ({args, flags}, os, signal) => {
         if(flags.recursive){
-            const recurseAmount = args.recurse > 0 ? args.recurse : Infinity;
+            const recurseAmount = args.recursive > 0 ? args.recursive : Infinity;
 
             const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
 
@@ -1796,8 +1796,9 @@ function defineCommands(){
                         lines.push({ type: "line", content: entry.name, loc: prefix + branch });
                         listRecursive(entry, nextPrefix, level + 1);
                     } else {
-                        console.log(entry.getSize(true))
-                        lines.push({ type: "line", content: entry.fullName(), loc: prefix + branch })
+                        let line = entry.fullName();
+                        if(flags.size) line += ` (${entry.getSize(true)})`;
+                        lines.push({ type: "line", content: line, loc: prefix + branch })
                     }
                 });
             };
@@ -1817,7 +1818,9 @@ function defineCommands(){
         })
         children.entries().forEach(([name, child]) => {
             if(child instanceof OSFile){
-                lines.push({ type: "line", content: `       ${child.fullName()}`, loc: "" });
+                let line = `       ${child.fullName()}`;
+                if(flags.size) line += ` (${child.getSize(true)})`;
+                lines.push({ type: "line", content: line, loc: "" });
             }
         })
 
