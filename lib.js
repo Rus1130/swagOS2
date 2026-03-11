@@ -402,7 +402,7 @@ class FilesystemService {
     DiagnosticService.record(
         `FilesystemService_resolvePath ${path} -> ${
             node instanceof OSDirectory ? "directory" : "file"
-        }: ${node.name}`
+        }: ${node.name}${node instanceof OSFile ? `.${node.type}` : ""}`
     );
 
     return node;
@@ -1762,8 +1762,11 @@ function defineCommands(){
         },
         schema: [],
     }, ({args, flags}, os, signal) => {
-        const palette = FilesystemService.resolvePath("/config/palette.conf");
+        const paletteKey = ConfigService.get("color_palette");
 
+        const palette = FilesystemService.resolvePath(`/data/palettes/${paletteKey}.conf`, "full");
+
+        if(!palette) throw new OSError(`Palette file not found at /data/palettes/${paletteKey}.conf`);
         if(!(palette instanceof OSFile)) throw new OSError(`Palette file not found at /config/palette.conf`);
 
         const htmlLines = [];
@@ -1786,13 +1789,15 @@ function defineCommands(){
             return luminance > 0.179 ? "#000000" : "#ffffff";
         }
 
+        const pad = Math.max(...Object.entries(paletteFile).map(x=>x[1].length));
+        
         for(const [key, value] of Object.entries(paletteFile)){
             if(key.endsWith("_background")){
                 const name = key.replace("_background", "");
-                htmlLines.push({type: "html", content: `<span style="color: ${getContrastingColor(value)}; background-color: ${value}">${key}</span>`})
+                htmlLines.push({type: "html", content: `${value.padStart(pad, " ")} : <span style="color: ${getContrastingColor(value)}; background-color: ${value}">${key}</span>`})
             } else if(key.endsWith("_color")){
                 const name = key.replace("_color", "");
-                htmlLines.push({type: "html", content: `<span style="color: ${value}; background-color: ${getContrastingColor(value)}">${key}</span>`})
+                htmlLines.push({type: "html", content: `${value.padStart(pad, " ")} : <span style="color: ${value}; background-color: ${getContrastingColor(value)}">${key}</span>`})
             }
         }
 
