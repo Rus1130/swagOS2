@@ -77,11 +77,23 @@ class ConfigService {
         return this.#config[key]
     }
 
+    static getAll(){
+        if(!this.#config) throw new OSError("ConfigService is not initialized");
+        if(!this.enabled) throw new OSError("ConfigService is not enabled", 1);
+
+        return structuredClone(this.#config);
+    }
+
     static reload(){
         if(!this.#config) throw new OSError("ConfigService is not initialized");
         if(!this.enabled) throw new OSError("ConfigService is not enabled", 1);
         DiagnosticService.record("ConfigService_reload");
-        this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read()).parse();
+        try {
+            this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read()).parse();
+        } catch (e) {
+            if(e instanceof OSError) throw e;
+            else throw new OSError(`Failed to reload config`, 1);
+        }
     }
 }
 
@@ -299,6 +311,23 @@ class FilesystemService {
         if (!this.enabled) return;
         this.enabled = false;
         DiagnosticService.record("FilesystemService_disable");
+    }
+
+    static remove(path){
+        if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        const node = this.resolvePath(path, "full");
+
+        if (!node) throw new OSError(`Path not found: "${path}"`);
+
+        if (node.parent) {
+            const fullPath = structuredClone(node.fullPath());
+            DiagnosticService.record(`FilesystemService_remove ${path}`);
+            node.parent.children.delete(node.name);
+            return fullPath;
+        } else {
+            throw new OSError(`Cannot remove root directory`);
+        }
     }
 
     /**
@@ -1011,6 +1040,18 @@ class OSFile {
         return `${this.name}.${ this.type}`;
     }
 
+    fullPath() {
+        let path = [];
+        let node = this.parent;
+
+        while (node && node.parent) {
+            path.unshift(node.name);
+            node = node.parent;
+        }
+
+        return "/" + path.join("/") + "/" + this.fullName();
+    }
+
     read() {
         return this.#content;
     }
@@ -1052,6 +1093,28 @@ class OSDirectory {
         this.name = name;
         this.parent = parent;
         this.children = new Map(); // name -> OSFile or OSDirectory
+    }
+
+    fullPath() {
+        let path = [];
+        let node = this;
+
+        while (node && node.parent) {
+            path.unshift(node.name);
+            node = node.parent;
+        }
+
+        return "/" + path.join("/");
+    }
+
+    list(){
+        const entries = [];
+
+        for (const [name, child] of this.children) {
+            entries.push(child);
+        }
+
+        return entries;
     }
 }
 
@@ -1678,8 +1741,72 @@ function defineCommands(){
             description: "Lists files in the current working directory",
             alias: "ls"
         },
-        schema: [],
+        schema: [
+            {
+                type: "flag",
+                name: "recursive",
+                short: "r",
+                description: "List files recursively",
+                required: false,
+                datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "size",
+                short: "s",
+                description: "Show file sizes",
+                required: false,
+                datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "spacing",
+                short: "sp",
+                description: "Set the spacing between tree branches when using recursive listing",
+                required: false,
+                datatype: "number",
+            }
+        ],
     }, ({args, flags}, os, signal) => {
+        if(flags.recursive){
+            const recurseAmount = args.recurse > 0 ? args.recurse : Infinity;
+
+            const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
+
+            
+            const lines = [];
+
+            const listRecursive = (directory, prefix = "", level = 0) => {
+                if (level > recurseAmount) return;
+
+                const entries = directory.list();
+
+                const lastIndex = entries.length - 1;
+
+                entries.forEach((entry, index) => {
+                    const isLast = index === lastIndex;
+
+                    const spacing = args.spacing ?? 2;
+
+                    // Tree characters
+                    const branch = (isLast ? "└" : "├") + "─".repeat(spacing - 1);
+                    const nextPrefix = prefix + (isLast ? (" " + " ".repeat(spacing)) : ("│" + ' '.repeat(spacing)));
+
+                    if (entry instanceof OSDirectory) {
+                        lines.push({ type: "line", content: entry.name, loc: prefix + branch });
+                        listRecursive(entry, nextPrefix, level + 1);
+                    } else {
+                        console.log(entry.getSize(true))
+                        lines.push({ type: "line", content: entry.fullName(), loc: prefix + branch })
+                    }
+                });
+            };
+
+            listRecursive(dir);
+
+            return lines;
+        }
+
         const children = FilesystemService.resolvePath(FilesystemService.getCurrentPath()).children;
         const lines = [];
 
@@ -1832,7 +1959,73 @@ function defineCommands(){
         ]
     })
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo"]);
+    CommandService.defineCommand("remove", {
+        options: {
+            description: "Removes a file or directory",
+            alias: "rm",
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "path",
+                description: "The path of the file or directory to remove",
+                required: true,
+            }
+        ],
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        try {
+            const name = FilesystemService.remove(path);
+            return { type: "line", content: `Removed ${name}`, loc: "" };
+        } catch (e) {
+            if(e instanceof OSError) return { type: "error", content: e.message, loc: "" };
+            else {
+                console.error(e);
+                return { type: "error", content: `An unexpected error occurred. Check console for details.`, loc: "" };
+            }
+        }
+    });
+
+    CommandService.defineCommand("config", {
+        options: {
+            description: "Gets or sets configuration values",
+            alias: "cfg",
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "action",
+                description: "The action to perform",
+                required: true,
+                options: ["list", "reload"],
+            },
+        ],
+    }, ({args, flags}, os, signal) => {
+        const action = args[0];
+
+        if(action === "list"){
+            const config = ConfigService.getAll();
+            const lines = [];
+
+            const maxKeyLength = Math.max(...Object.keys(config).map(k => k.length));
+
+            for(const [key, value] of Object.entries(config)){
+                lines.push({ type: "line", content: `${key.padEnd(maxKeyLength, " ")} : ${value}`, loc: "" });
+            }
+            
+            return lines;
+        }
+
+        if(action === "reload"){
+            ConfigService.reload();
+            return { type: "line", content: "Configuration reloaded", loc: "" };
+        }
+    });
+                
+
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -1853,7 +2046,6 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
-            abbreviate_service_names_in_logs = true
             color_palette = "default"
             `, 12
         ).split("\n")
