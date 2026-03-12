@@ -97,6 +97,10 @@ class ConfigService {
     }
 }
 
+class NoValue {
+    constructor(){}
+}
+
 class CommandService {
     static os = null;
     static enabled = false;
@@ -226,6 +230,8 @@ class CommandService {
         if(!this.enabled) return;
         const entry = this.commands.get(name);
 
+        let verificationReturn = { valid: true, error: null, flags: {} };
+
         DiagnosticService.record(`CommandService_verify ${name}`);
 
         if(!entry){
@@ -236,6 +242,13 @@ class CommandService {
 
         const positionalSchema = schema.filter(s => s.type === "positional");
         const flagSchema = schema.filter(s => s.type === "flag" || s.type === "option");
+
+        for(const [key, value] of Object.entries(flags)){
+            // remove the short name from the flags object if it exists
+            const flagDef = flagSchema.find(s => s.short === key);
+            flags[flagDef ? flagDef.name : key] = value;
+            if(flagDef && flags[flagDef.short]) delete flags[flagDef.short];
+        }
 
         let positionalIndex = 0;
         for(const param of positionalSchema){
@@ -259,28 +272,127 @@ class CommandService {
             const flagDef = flagSchema.find(s => s.name === flagName || s.short === flagName);
             if(!flagDef) continue;
 
-            let flagType = flagDef.datatype;
 
-            if(flagType === undefined){
-                CommandService.unregisterCommand(name);
-                return { valid: false, error: `Flag definition for "--${flagDef.name}" is missing datatype (string, num, bool)` };
+            const hasFlag = flags[flagName] !== undefined;
+
+            if (!hasFlag) {
+                if (flagDef.required) {
+                    return { valid: false, error: `Missing required flag: "--${flagName}"` };
+                }
+                continue;
             }
 
-            let actualType = typeof flags[flagName];
+            let flagValue = flags[flagName];
 
-            if(/-?\d+/.test(flags[flagName])){
-                actualType = "number";
-                flags[flagName] = Number(flags[flagName]);
+            if(flagValue instanceof NoValue && flagDef.default !== undefined){
+                flagValue = flagDef.default;
             }
 
-            if(flagType !== actualType){
-                return { valid: false, error: `Invalid value for flag "--${flagDef.name}": expected ${flagType}, got ${actualType}` };
+            if(flagDef.datatype === "boolean" && flagValue instanceof NoValue){
+                flagValue = true;
             }
 
-            if(flagDef.default && typeof flagDef.default !== flagType){
-                CommandService.unregisterCommand(name);
-                return { valid: false, error: `Invalid default value for flag "--${flagDef.name}"` };
-            }
+            const expectedType = flagDef.datatype;
+            let actualType = typeof flagValue;
+
+            console.log(expectedType, actualType, flagDef)
+
+            // console.log(flagValue)
+
+            // if(flagValue instanceof NoValue){
+            //     return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
+            // }
+
+            // console.log(expectedType, actualType)
+
+            // if(expectedType !== actualType){
+            //     return { valid: false, error: `Invalid value type for flag "--${flagName}": expected ${expectedType}, got ${actualType}` };
+            // }
+
+
+
+
+            // const expectedType = flagDef.datatype;
+            // const actualType = typeof flagValue;            
+
+            // // Determine if flag exists
+            // const hasFlag = flags[flagFull] !== undefined || flags[flagAlias] !== undefined;
+
+            // if (!hasFlag) {
+            //     // Flag not present: throw error if required, otherwise skip entirely
+            //     if (def.required) {
+            //         throw new SwagOSCommandError(`Missing required flag: ${def.long}`);
+            //     }
+            //     break; // Don't add to output
+            // }
+
+            // // Get flag value (prefer full name)
+            // let flagValue = flags[flagFull] !== undefined ? flags[flagFull] : flags[flagAlias];
+
+            // // Only use default if flag exists but is explicitly false
+            // if (flagValue === false && def.defaultValue !== undefined) {
+            //     flagValue = def.defaultValue;
+            // }
+
+            // let trueValue;
+
+            // // Only write to output if flagValue is not false
+            // if (flagValue !== false) {
+            //     if (def.dataType === "bool") {
+            //         trueValue = flagValue === true || flagValue === "true" || flagValue === "1";
+            //     } else if (def.dataType === "int") {
+            //         const val = parseInt(flagValue, 10);
+            //         if (isNaN(val) || !Number.isInteger(val)) {
+            //             if (def.defaultValue !== undefined) {
+            //                 trueValue = parseInt(def.defaultValue, 10);
+            //             } else {
+            //                 throw new SwagOSCommandError(`Flag "${flagFull ? `--${flagFull}` : `-${flagAlias}`}" requires an integer value.`);
+            //             }
+            //         } else {
+            //             trueValue = val;
+            //         }
+            //     } else {
+            //         trueValue = String(flagValue);
+            //     }
+            // }
+
+            // if(def.options && !def.options.includes(trueValue)) {
+            //     throw new SwagOSCommandError(`Invalid value for flag "${flagFull ? `--${flagFull}` : `-${flagAlias}`}". Valid options: ${def.options.join(", ")}`);
+            // }
+
+            // output[def.name] = trueValue;
+
+
+
+        
+            // let flagType = flagDef.datatype;
+
+            // if(flagType === undefined){
+            //     CommandService.unregisterCommand(name);
+            //     return { valid: false, error: `Flag definition for "--${flagDef.name}" is missing datatype (string, num, bool)` };
+            // }
+
+            // if(flagDef.default !== undefined && (typeof flags[flagName] !== typeof flagDef.default)){
+            //     flags[flagName] = flagDef.default;
+            // }
+
+            // let actualType = typeof flags[flagName];
+
+            // if(/-?\d+/.test(flags[flagName])){
+            //     actualType = "number";
+            //     flags[flagName] = Number(flags[flagName]);
+            // }
+
+            // if(flagType !== actualType){
+            //     return { valid: false, error: `Invalid value type for flag "--${flagDef.name}": expected ${flagType}, got ${actualType}` };
+            // }
+
+            // if(flagDef.default && typeof flagDef.default !== flagType){
+            //     CommandService.unregisterCommand(name);
+            //     return { valid: false, error: `Invalid default value for flag "--${flagDef.name}"` };
+            // }
+
+            // verificationReturn.flags[flagDef.name] = flags[flagName];
         }
 
         return { valid: true, error: null, flags };
@@ -1748,7 +1860,8 @@ function defineCommands(){
                 short: "r",
                 description: "List files recursively",
                 required: false,
-                datatype: "boolean",
+                datatype: "number",
+                default: 0
             },
             {
                 type: "flag",
@@ -1769,11 +1882,10 @@ function defineCommands(){
         ],
     }, ({args, flags}, os, signal) => {
         if(flags.recursive){
-            const recurseAmount = args.recursive > 0 ? args.recursive : Infinity;
+            const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
 
             const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
 
-            
             const lines = [];
 
             const listRecursive = (directory, prefix = "", level = 0) => {
@@ -1786,7 +1898,7 @@ function defineCommands(){
                 entries.forEach((entry, index) => {
                     const isLast = index === lastIndex;
 
-                    const spacing = args.spacing ?? 2;
+                    const spacing = flags.spacing ?? 2;
 
                     // Tree characters
                     const branch = (isLast ? "└" : "├") + "─".repeat(spacing - 1);
@@ -2350,6 +2462,8 @@ class OS {
             throw new OSError(error);
         }
 
+        fragment.flags = verification.flags;
+
         const entry = CommandService.commands.get(fragment.name);
         const schema = entry.body.schema || [];
         const flagSchema = schema.filter(s => s.type === "flag" || s.type === "option");
@@ -2496,7 +2610,7 @@ class OS {
                     const [flag, value] = flagPart.split("=");
                     flags[flag] = value;
                 } else {
-                    flags[flagPart] = true;
+                    flags[flagPart] = new NoValue();
                 }
             }
             else if (token.startsWith("-") && token.length > 1) {
@@ -2505,7 +2619,7 @@ class OS {
                     const [flag, value] = flagPart.split("=");
                     flags[flag] = value;
                 } else {
-                    flags[flagPart] = true;
+                    flags[flagPart] = new NoValue();
                 }
             } else {
                 positional.push(token);
