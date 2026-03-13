@@ -288,18 +288,17 @@ class CommandService {
 
             let flagValue = flags[flagName];
             let expectedType = flagDef.datatype;
+
+            if(flagValue instanceof NoValue && flagDef.default === undefined){
+                return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
+            }
+
             let actualType = typeof flagValue;
 
             if(flagValue instanceof NoValue && expectedType == "boolean"){
                 flagValue = true;
                 actualType = "boolean";
             }
-
-            if(flagValue instanceof NoValue && flagDef.default === undefined){
-                return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
-            }
-
-            /// something is wrong here, NoValue is being sent
             
             if(flagValue instanceof NoValue && flagDef.default !== undefined){
                 flagValue = flagDef.default;
@@ -311,7 +310,9 @@ class CommandService {
             }
 
 
-            verificationReturn.flags[flagDef.name] = flagValue;
+            if(verificationReturn.flags[flagDef.name] === undefined){
+                verificationReturn.flags[flagDef.name] = flagValue;
+            }
         }
 
         return { valid: true, error: null, flags };
@@ -1801,9 +1802,6 @@ function defineCommands(){
         ],
     }, ({args, flags}, os, signal) => {
         if(flags.recursive){
-
-            console.log(flags)
-
             const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
 
             console.log(recurseAmount)
