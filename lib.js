@@ -1955,14 +1955,34 @@ function defineCommands(){
         }
 
         const pad = Math.max(...Object.entries(paletteFile).map(x=>x[1].length));
+
+        const pairs = {};
+
+        let padding = '';
         
         for(const [key, value] of Object.entries(paletteFile)){
-            if(key.endsWith("_background")){
-                const name = key.replace("_background", "");
+
+            const [category, type] = key.split("_");
+
+            if(pairs[category] == undefined) pairs[category] = {};
+
+            padding = " ".repeat(pad - value.length + 10);
+
+            if(type === "background") {
+                pairs[category].background = value;
                 htmlLines.push({type: "html", content: `${value.padStart(pad, " ")} : <span style="color: ${getContrastingColor(value)}; background-color: ${value}">${key}</span>`})
-            } else if(key.endsWith("_color")){
-                const name = key.replace("_color", "");
+            } else if(type === "color") {
+                pairs[category].color = value;
                 htmlLines.push({type: "html", content: `${value.padStart(pad, " ")} : <span style="color: ${value}; background-color: ${getContrastingColor(value)}">${key}</span>`})
+            }
+        }
+
+        htmlLines.push({type: "html", content: `<br>`})
+
+
+        for(const [category, pair] of Object.entries(pairs)){
+            if(pair.background && pair.color){
+                htmlLines.push({type: "html", loc: padding,  content: `<span style="color: ${pair.color}; background-color: ${pair.background}">${category}</span>`})
             }
         }
 
@@ -2102,8 +2122,8 @@ function createFilesystem(){
             error_background = "#FF0000"
             error_color = "#FFFFFF"
 
-            severe_error_background = "#8B0000"
-            severe_error_color = "#FFFFFF"
+            severeError_background = "#8B0000"
+            severeError_color = "#FFFFFF"
 
             savior_background = "#5a5a5a"
             savior_color = "#FFFFFF"
