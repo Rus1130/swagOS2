@@ -276,6 +276,8 @@ class CommandService {
             const flagDef = flagSchema.find(s => s.name === flagName || s.short === flagName);
             if(!flagDef) continue;
 
+            console.log(flagDef)
+
 
             const hasFlag = flags[flagName] !== undefined;
 
@@ -288,16 +290,15 @@ class CommandService {
 
             let flagValue = flags[flagName];
             let expectedType = flagDef.datatype;
-
-            if(flagValue instanceof NoValue && flagDef.default === undefined){
-                return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
-            }
-
             let actualType = typeof flagValue;
 
             if(flagValue instanceof NoValue && expectedType == "boolean"){
                 flagValue = true;
                 actualType = "boolean";
+            }
+
+            if(flagValue instanceof NoValue && flagDef.default === undefined){
+                return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
             }
             
             if(flagValue instanceof NoValue && flagDef.default !== undefined){
