@@ -232,6 +232,9 @@ class CommandService {
 
         let verificationReturn = { valid: true, error: null, flags: {} };
 
+        // console.log(flags)
+        
+
         DiagnosticService.record(`CommandService_verify ${name}`);
 
         if(!entry){
@@ -251,6 +254,7 @@ class CommandService {
         }
 
         let positionalIndex = 0;
+
         for(const param of positionalSchema){
             const required = param.required || false;
             if(required && positionalIndex >= args.length){
@@ -283,116 +287,31 @@ class CommandService {
             }
 
             let flagValue = flags[flagName];
-
-            if(flagValue instanceof NoValue && flagDef.default !== undefined){
-                flagValue = flagDef.default;
-            }
-
-            if(flagDef.datatype === "boolean" && flagValue instanceof NoValue){
-                flagValue = true;
-            }
-
-            const expectedType = flagDef.datatype;
+            let expectedType = flagDef.datatype;
             let actualType = typeof flagValue;
 
-            console.log(expectedType, actualType, flagDef)
+            if(flagValue instanceof NoValue && expectedType == "boolean"){
+                flagValue = true;
+                actualType = "boolean";
+            }
 
-            // console.log(flagValue)
+            if(flagValue instanceof NoValue && flagDef.default === undefined){
+                return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
+            }
 
-            // if(flagValue instanceof NoValue){
-            //     return { valid: false, error: `Flag "--${flagName}" requires a value of type ${expectedType}` };
-            // }
+            /// something is wrong here, NoValue is being sent
+            
+            if(flagValue instanceof NoValue && flagDef.default !== undefined){
+                flagValue = flagDef.default;
+                actualType = typeof flagValue;
+            }
 
-            // console.log(expectedType, actualType)
-
-            // if(expectedType !== actualType){
-            //     return { valid: false, error: `Invalid value type for flag "--${flagName}": expected ${expectedType}, got ${actualType}` };
-            // }
-
-
-
-
-            // const expectedType = flagDef.datatype;
-            // const actualType = typeof flagValue;            
-
-            // // Determine if flag exists
-            // const hasFlag = flags[flagFull] !== undefined || flags[flagAlias] !== undefined;
-
-            // if (!hasFlag) {
-            //     // Flag not present: throw error if required, otherwise skip entirely
-            //     if (def.required) {
-            //         throw new SwagOSCommandError(`Missing required flag: ${def.long}`);
-            //     }
-            //     break; // Don't add to output
-            // }
-
-            // // Get flag value (prefer full name)
-            // let flagValue = flags[flagFull] !== undefined ? flags[flagFull] : flags[flagAlias];
-
-            // // Only use default if flag exists but is explicitly false
-            // if (flagValue === false && def.defaultValue !== undefined) {
-            //     flagValue = def.defaultValue;
-            // }
-
-            // let trueValue;
-
-            // // Only write to output if flagValue is not false
-            // if (flagValue !== false) {
-            //     if (def.dataType === "bool") {
-            //         trueValue = flagValue === true || flagValue === "true" || flagValue === "1";
-            //     } else if (def.dataType === "int") {
-            //         const val = parseInt(flagValue, 10);
-            //         if (isNaN(val) || !Number.isInteger(val)) {
-            //             if (def.defaultValue !== undefined) {
-            //                 trueValue = parseInt(def.defaultValue, 10);
-            //             } else {
-            //                 throw new SwagOSCommandError(`Flag "${flagFull ? `--${flagFull}` : `-${flagAlias}`}" requires an integer value.`);
-            //             }
-            //         } else {
-            //             trueValue = val;
-            //         }
-            //     } else {
-            //         trueValue = String(flagValue);
-            //     }
-            // }
-
-            // if(def.options && !def.options.includes(trueValue)) {
-            //     throw new SwagOSCommandError(`Invalid value for flag "${flagFull ? `--${flagFull}` : `-${flagAlias}`}". Valid options: ${def.options.join(", ")}`);
-            // }
-
-            // output[def.name] = trueValue;
+            if(actualType !== expectedType){
+                return { valid: false, error: `Invalid value type for flag "--${flagName}": expected ${expectedType}, got ${actualType}` };
+            }
 
 
-
-        
-            // let flagType = flagDef.datatype;
-
-            // if(flagType === undefined){
-            //     CommandService.unregisterCommand(name);
-            //     return { valid: false, error: `Flag definition for "--${flagDef.name}" is missing datatype (string, num, bool)` };
-            // }
-
-            // if(flagDef.default !== undefined && (typeof flags[flagName] !== typeof flagDef.default)){
-            //     flags[flagName] = flagDef.default;
-            // }
-
-            // let actualType = typeof flags[flagName];
-
-            // if(/-?\d+/.test(flags[flagName])){
-            //     actualType = "number";
-            //     flags[flagName] = Number(flags[flagName]);
-            // }
-
-            // if(flagType !== actualType){
-            //     return { valid: false, error: `Invalid value type for flag "--${flagDef.name}": expected ${flagType}, got ${actualType}` };
-            // }
-
-            // if(flagDef.default && typeof flagDef.default !== flagType){
-            //     CommandService.unregisterCommand(name);
-            //     return { valid: false, error: `Invalid default value for flag "--${flagDef.name}"` };
-            // }
-
-            // verificationReturn.flags[flagDef.name] = flags[flagName];
+            verificationReturn.flags[flagDef.name] = flagValue;
         }
 
         return { valid: true, error: null, flags };
@@ -1882,7 +1801,12 @@ function defineCommands(){
         ],
     }, ({args, flags}, os, signal) => {
         if(flags.recursive){
+
+            console.log(flags)
+
             const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
+
+            console.log(recurseAmount)
 
             const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
 
@@ -2136,8 +2060,7 @@ function defineCommands(){
             ConfigService.reload();
             return { type: "line", content: "Configuration reloaded", loc: "" };
         }
-    });
-                
+    });      
 
 
     CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config"]);
@@ -2534,103 +2457,129 @@ class OS {
     }
 
     parseCommandFragment(input) {
-        let i = 0;
+        const unparsedFlags = [];
+        const unparsedArgs = [];
+
         let current = "";
-        let args = [];
-        let quotedArgs = [];
+        let inSingle = false;
+        let inDouble = false;
+        let escaping = false;
 
-        let inDoubleQuotes = false;
-        let inSingleQuotes = false;
+        for (let i = 0; i < input.length; i++) {
+            const ch = input[i];
 
-        let tokenStartedQuoted = false;
-
-        while (i < input.length) {
-            const c = input[i];
-
-            if (c === '\\') {
-                const next = input[i + 1];
-
-                if (next === ' ' || next === '"' || next === "'" || next === '\\') {
-                    current += next;
-                    i += 2;
-                    continue;
-                }
-
-                current += '\\';
-                i++;
+            if (escaping) {
+                current += ch;
+                escaping = false;
                 continue;
             }
-            else if (c === '"' && !inSingleQuotes) {
-                if (!inDoubleQuotes && current.length === 0)
-                    tokenStartedQuoted = true;
 
-                inDoubleQuotes = !inDoubleQuotes;
+            if (ch === "\\") {
+                escaping = true;
+                continue;
             }
-            else if (c === "'" && !inDoubleQuotes) {
-                if (!inSingleQuotes && current.length === 0)
-                    tokenStartedQuoted = true;
 
-                inSingleQuotes = !inSingleQuotes;
+            if (ch === "'" && !inDouble) {
+                inSingle = !inSingle;
+                current += ch; // keep quotes if you want them
+                continue;
             }
-            else if (c === " " && !inDoubleQuotes && !inSingleQuotes) {
+
+            if (ch === '"' && !inSingle) {
+                inDouble = !inDouble;
+                current += ch; // keep quotes
+                continue;
+            }
+
+            if (ch === " " && !inSingle && !inDouble) {
                 if (current.length > 0) {
-                    args.push(current);
-                    quotedArgs.push(tokenStartedQuoted);
-                    current = "";
-                    tokenStartedQuoted = false;
+                    if (current.startsWith("-")) {
+                        unparsedFlags.push(current);
+                    } else {
+                        unparsedArgs.push(current);
+                    }
+                    current = ""; // reset token
                 }
-            } else {
-                current += c;
+                continue;
             }
 
-            i++;
+            current += ch;
         }
 
+        // push last token
         if (current.length > 0) {
-            args.push(current);
-            quotedArgs.push(tokenStartedQuoted);
+            if (current.startsWith("-")) {
+                unparsedFlags.push(current);
+            } else {
+                unparsedArgs.push(current);
+            }
         }
 
-        const [command, ...rest] = args;
-        const restQuoted = quotedArgs.slice(1);
-
-        const positional = [];
+        const args = [];
         const flags = {};
 
-        for (let j = 0; j < rest.length; j++) {
-            const token = rest[j];
-            const isQuoted = restQuoted[j];
 
-            if (isQuoted) {
-                positional.push(token);
-            }
-            else if (token.startsWith("--")) {
-                const flagPart = token.slice(2);
-                if (flagPart.includes("=")) {
-                    const [flag, value] = flagPart.split("=");
-                    flags[flag] = value;
-                } else {
-                    flags[flagPart] = new NoValue();
-                }
-            }
-            else if (token.startsWith("-") && token.length > 1) {
-                const flagPart = token.slice(1);
-                if (flagPart.includes("=")) {
-                    const [flag, value] = flagPart.split("=");
-                    flags[flag] = value;
-                } else {
-                    flags[flagPart] = new NoValue();
-                }
+        function isWrappedInQuotes(str) {
+            return (str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"));
+        }
+
+
+        for (const token of unparsedArgs) {
+            if(isWrappedInQuotes(token)) {
+                args.push(token.slice(1, -1));
             } else {
-                positional.push(token);
+                args.push(token);
             }
         }
+
+        for (const token of unparsedFlags) {
+            let flagName, flagValue;
+
+            const isLongFlag = token.startsWith("--");
+            const isShortFlag = token.startsWith("-") && !isLongFlag;
+
+            if (isLongFlag) {
+                const flagPart = token.slice(2);
+
+                if (flagPart.includes("=")) {
+                    [flagName, flagValue] = flagPart.split("=");
+                } else {
+                    flagName = flagPart;
+                    flagValue = new NoValue();
+                }
+            } else if (isShortFlag) {
+                const flagPart = token.slice(1);
+                if (flagPart.includes("=")) {
+                    [flagName, flagValue] = flagPart.split("=");
+                } else {
+                    flagName = flagPart;
+                    flagValue = new NoValue();
+                }
+            } else {
+                continue; // skip invalid flag
+            }
+
+
+            if(flagValue instanceof NoValue) {}
+            else if(/^-?\d+$/.test(flagValue)) {
+                flagValue = Number(flagValue);
+            } else if(flagValue === "true" || flagValue === "false") {
+                flagValue = flagValue === "true";
+            } else if(isWrappedInQuotes(flagValue)) {
+                flagValue = flagValue.slice(1, -1);
+            }
+
+            flags[flagName] = flagValue;
+        }
+
+
+        const command = args.shift();
 
         return {
             name: command,
-            args: positional,
+            args,
             flags
-        };
+        }
     }
 
     sendCommand(command){
