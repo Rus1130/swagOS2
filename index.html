@@ -74,14 +74,20 @@
         min-height: 12px;
     }
 
-    .line textarea {
+    textarea {
         background-color: var(--editor_background);
         color: var(--editor_color);
+        border: none;
         white-space: pre-wrap;
         overflow-wrap: anywhere;
         width: 100%;
         min-width: 0;
-        min-height: 12px;
+        overflow-y: hidden;
+        resize: none;
+    }
+
+    textarea:focus {
+        outline: none;
     }
 
     div[contenteditable] {

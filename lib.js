@@ -921,7 +921,7 @@ ServiceManager.services.forEach(service => {
         } break;
 
         case CommandService: {
-            service.abbreviation = "Msrv";
+            service.abbreviation = "Esrv";
             service.shortName = "command";
             service.critical = true;
         } break;
@@ -2193,6 +2193,9 @@ function createFilesystem(){
 
             highlight_background = "#d862ff"
             highlight_color = "#FFFFFF"
+
+            editor_background = "#000000"
+            editor_color = "#FFFFFF"
             `, 12
         ).split("\n"))
 
@@ -2812,14 +2815,29 @@ class OS {
 
 
     openEditor(file){
+        const line = document.createElement('div');
+
+        line.classList.add('line');
+
+        const loc = document.createElement('span');
+
         const editor = document.createElement('textarea');
 
         editor.classList.add('editor');
 
+        editor.addEventListener("input", () => {
+            editor.style.height = "auto";        // reset height
+            editor.style.height = editor.scrollHeight + "px"; // set to content height
+        });
+
+        line.appendChild(loc);
+        line.appendChild(editor);
+
+        
 
         const editorLine = this.line(`-- Editing ${file.fullName()} --`, "");
-
-        this.elem.appendChild(editor);
+        this.elem.appendChild(line);
+        editor.focus();
     }
 }
 
