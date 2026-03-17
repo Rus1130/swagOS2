@@ -555,6 +555,7 @@ class FilesystemService {
 class SaviorService {
     static os = null;
     static enabled = false;
+    static notified = false;
 
     static watch(service){
         setInterval(() => {
@@ -579,14 +580,13 @@ class SaviorService {
 
         setInterval(() => {
             if(!this.enabled) return;
-
-            // get the last line in the console
             const lines = Array.from(this.os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
             const lastLine = lines[lines.length - 1];
-            if(lastLine && !lastLine[1].classList.contains("commandline")){
+
+            if(!this.notified && lastLine && !lastLine[1].classList.contains("commandline") && !lastLine[1].classList.contains("editor")){
                 this.os.commandLine();
             }
-        }, 10_000);
+        }, 1000);
     }
 
     static enable(){
@@ -599,6 +599,24 @@ class SaviorService {
         if(!this.enabled) return;
         this.enabled = false;
         DiagnosticService.record("SaviorService_disable");
+    }
+
+    /**
+     * Notify the SaviorService that the command line will be unavailable, so it can take action to ensure the user is not left without a command line.
+     * @returns 
+     */
+    static notify(){
+        if(!this.enabled) return;
+        if(this.notified) return;
+        this.notified = true;
+        DiagnosticService.record("SaviorService_notify");
+    }
+
+    static unnotify(){
+        if(!this.enabled) return;
+        if(this.notified == false) return;
+        this.notified = false;
+        DiagnosticService.record("SaviorService_unnotify");
     }
 }
 
@@ -699,9 +717,9 @@ class DiagnosticService {
             .replace(/^OS\./, "OpSys.")
             .replace(/^new OS/, "OpSys")
             .replace("HTMLDivElement.<anonymous>", "DOM")
+            .replace("HTMLDocument.<anonymous>", "DOM")
             .trim()
         ).filter(line => line.length > 0).reverse();
-
         // if last line is "new OS", remove it
 
         const replacer = ServiceManager.services.map(s => [s.name, s.abbreviation]);
@@ -778,18 +796,18 @@ class CommandExecService {
         if(!this.enabled) return;
         CommandExecService.queue.length = 0;
         DiagnosticService.record("CommandExecService_postpone");
+        SaviorService.notify();
     }
 
     static continue(){
         if(!this.enabled) return;
         if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
 
-        //CommandExecService.queue.length = 0;
-
         DiagnosticService.record("CommandExecService_continue");
         this.enqueue(this.os.parseCommand("obuffer"));
         this.enqueue(this.os.parseCommand("commandline"));
         this.runNext();
+        SaviorService.unnotify();
     }
 
     static init(os) {
@@ -885,7 +903,7 @@ ServiceManager.services.forEach(service => {
         } break;
 
         case OutputService: {
-            service.abbreviation = "Psrv";
+            service.abbreviation = "Osrv";
             service.shortName = "output";
             service.critical = false;
         } break;
@@ -1206,7 +1224,12 @@ function defineCommands(){
 
             DiagnosticService.getData().forEach(entry => {
                 if(entry.type === "record"){
-                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}${params.flags.trace ? `\n    ${entry.data.stack.join(" -> ")}` : ""}`);
+
+                    const stackTrace = entry.data.stack
+                    .join(" -> ")
+                    .replace("Xsrv.runNext -> OpSys.runChain -> OpSys.runSingle", "Execution Pipeline")
+
+                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}${params.flags.trace ? `\n    ${stackTrace}` : ""}`);
                 } else if(entry.type === "note"){
                     uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] [NOTE] ${entry.data.message}`);
                 }
@@ -1803,8 +1826,6 @@ function defineCommands(){
         if(flags.recursive){
             const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
 
-            console.log(recurseAmount)
-
             const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
 
             const lines = [];
@@ -1875,7 +1896,7 @@ function defineCommands(){
                 name: "file_path",
                 description: "The path of the file to read",
                 required: true,
-            },
+            }
         ]
     }, ({args, pipe, flags}, os, signal) => {
         const path = args[0];
@@ -2077,10 +2098,42 @@ function defineCommands(){
             ConfigService.reload();
             return { type: "line", content: "Configuration reloaded", loc: "" };
         }
-    });      
+    });
+
+    CommandService.defineCommand("editfile", {
+        options: {
+            description: "Opens a file in the editor",
+            alias: "ef",
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "file_path",
+                description: "The path of the file to edit",
+                required: true,
+            }
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        try {
+            const file = FilesystemService.resolvePath(path, "full");
+            if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
 
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config"]);
+            CommandExecService.postpone();
+            os.openEditor(file);
+        } catch (e) {
+            if(e instanceof OSError) return { type: "error", content: e.message, loc: "" };
+            else { 
+                console.error(e);
+                return { type: "error", content: `An unexpected error occurred. Check console for details.`, loc: "" };
+            }
+        }
+    })
+
+
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -2095,6 +2148,12 @@ function createFilesystem(){
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("config", "/")
     FilesystemService.createDirectory("data", "/")
+
+    FilesystemService.createFile("welcome", "txt", "/", [
+        "Hello there!",
+        "This is a test file.",
+    ])
+
     FilesystemService.createDirectory("palettes", "/data")
 
     FilesystemService.createFile("user", "conf", "/config",
@@ -2142,6 +2201,7 @@ function createFilesystem(){
 
 class OS {
     commandRunning = false;
+    programRunning = false;
 
     // d/mn/Y h:m:s z
     timestamp(template, timestamp) {
@@ -2349,6 +2409,14 @@ class OS {
                 color: ${real.bg} !important;
             }
             `;        
+        });
+
+        document.addEventListener("keyup", (e) => {
+            if(e.key === "q" && e.ctrlKey){
+                e.preventDefault();
+                // abort
+                CommandExecService.continue();
+            }
         });
     }
 
@@ -2630,6 +2698,8 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
+
+        return line;
     }
 
     error(content){
@@ -2645,6 +2715,8 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
+
+        return line;
     }
 
     htmlLine(content, loc = ""){
@@ -2659,6 +2731,8 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
+
+        return line;
     }
 
     savior(content){
@@ -2674,6 +2748,8 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
+
+        return line;
     }
 
     severe(content){
@@ -2689,6 +2765,8 @@ class OS {
         line.appendChild(locElem);
         line.appendChild(contentElem);
         this.elem.appendChild(line);
+
+        return line;
     }
 
     commandLine(){
@@ -2728,6 +2806,20 @@ class OS {
         this.elem.appendChild(line);
 
         contentElem.focus();
+    }
+
+
+
+
+    openEditor(file){
+        const editor = document.createElement('textarea');
+
+        editor.classList.add('editor');
+
+
+        const editorLine = this.line(`-- Editing ${file.fullName()} --`, "");
+
+        this.elem.appendChild(editor);
     }
 }
 
