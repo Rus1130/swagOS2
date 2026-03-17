@@ -232,9 +232,6 @@ class CommandService {
 
         let verificationReturn = { valid: true, error: null, flags: {} };
 
-        // console.log(flags)
-        
-
         DiagnosticService.record(`CommandService_verify ${name}`);
 
         if(!entry){
@@ -275,9 +272,6 @@ class CommandService {
         for(const flagName of Object.keys(flags)){
             const flagDef = flagSchema.find(s => s.name === flagName || s.short === flagName);
             if(!flagDef) continue;
-
-            console.log(flagDef)
-
 
             const hasFlag = flags[flagName] !== undefined;
 
@@ -645,6 +639,10 @@ class OutputService {
             else if(line.type === "severe_error") this.os.severe(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
+            else {
+                console.error(`OutputService: Unknown line type: ${line.type}`, line);
+                throw new OSError(`OutputService: Unknown line type: ${line.type}`);
+            }
         }
         DiagnosticService.record("OutputService_flush");
         this.buffer.length = 0;
@@ -1812,7 +1810,7 @@ function defineCommands(){
             const lines = [];
 
             const listRecursive = (directory, prefix = "", level = 0) => {
-                if (level > recurseAmount) return;
+                if (level >= recurseAmount) return;
 
                 const entries = directory.list();
 
@@ -1860,9 +1858,9 @@ function defineCommands(){
         })
 
         if(lines.length == 0){
-            return { type: "line", content: "No files found in current directory", loc: "" };
+            lines.push({ type: "line", content: "-- Directory empty --", loc: "" });
         }
-
+        
         return lines;
     })
 
