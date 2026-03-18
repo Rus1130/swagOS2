@@ -1101,7 +1101,8 @@ class OSFile {
         return "/" + path.join("/") + "/" + this.fullName();
     }
 
-    read() {
+    read(join = false) {
+        if(join) return this.#content.join("\n");
         return this.#content;
     }
 
@@ -2165,6 +2166,21 @@ function createFilesystem(){
         ).split("\n")
     );
 
+    FilesystemService.createFile("editor_styling", "conf", "/data",
+        normalizeIndentation(
+            `
+            txt = {
+                loc = ":"
+                current_line_indicator = ">"
+            }
+            conf = {
+                loc = "$lineno "
+                current_line_indicator = "$lineno>"
+            }
+            `
+        ).split("\n")
+    );
+
     FilesystemService.createFile("default", "conf", "/data/palettes", 
         normalizeIndentation(
             `
@@ -2196,6 +2212,9 @@ function createFilesystem(){
 
             editor_background = "#000000"
             editor_color = "#FFFFFF"
+
+            editor_loc_background = "#000000"
+            editor_loc_color = "#FFFFFF"
             `, 12
         ).split("\n"))
 
@@ -2815,6 +2834,26 @@ class OS {
 
 
     openEditor(file){
+        const styles = FilesystemService.resolvePath(`/data/editor_styling.conf`, "full");
+
+        const styleObject = new SwagObjectParser(styles.read()).parse();
+
+        if(styleObject[file.type] == undefined){
+            throw new OSError(`No editor styling found for files of type "${file.type}"`);
+        }
+
+        if(styleObject[file.type].loc == undefined){
+            throw new OSError(`No "loc" property found in editor styling for files of type "${file.type}"`);
+        }
+
+        if(styleObject[file.type].current_line_indicator == undefined){
+            throw new OSError(`No "current_line_indicator" property found in editor styling for files of type "${file.type}"`);
+        }
+
+
+        let locIndicator = styleObject[file.type].loc;
+        let currentLineIndicator = styleObject[file.type].current_line_indicator;
+
         const line = document.createElement('div');
 
         line.classList.add('line');
@@ -2824,15 +2863,59 @@ class OS {
         const editor = document.createElement('textarea');
 
         editor.classList.add('editor');
+        loc.classList.add('editor');
+
+        editor.value = file.read(true);
+
+        editor.spellcheck = false;
+
+        function updateLOC() {
+            const text = editor.value;
+            const lines = text.split("\n");
+
+            const cursorPos = editor.selectionStart;
+            const currentLine = text.substring(0, cursorPos).split("\n").length - 1;
+
+
+            // fix
+
+            loc.textContent = lines
+                .map((_, i) => {
+                    locIndicator = locIndicator.replace("$lineno", (i + 1));
+                    currentLineIndicator = currentLineIndicator.replace("$lineno", (i + 1));
+                    i === currentLine ? currentLineIndicator : locIndicator
+                })
+                .join("\n");
+        }
+
+
+        requestAnimationFrame(() => {
+            editor.style.height = "auto";
+            editor.style.height = editor.scrollHeight + "px";
+
+            updateLOC();
+        });
 
         editor.addEventListener("input", () => {
-            editor.style.height = "auto";        // reset height
-            editor.style.height = editor.scrollHeight + "px"; // set to content height
+            editor.style.height = "auto";
+            editor.style.height = editor.scrollHeight + "px";
+
+            updateLOC();
         });
+
+        document.addEventListener("selectionchange", () => {
+            if(document.activeElement === editor){
+                updateLOC();
+            }
+        });
+
+        // editor.addEventListener("keyup", (e) => {
+        //     updateLOC();
+        // });
+
 
         line.appendChild(loc);
         line.appendChild(editor);
-
         
 
         const editorLine = this.line(`-- Editing ${file.fullName()} --`, "");

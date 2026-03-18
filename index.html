@@ -74,7 +74,12 @@
         min-height: 12px;
     }
 
-    textarea {
+    .line span.editor {
+        background-color: var(--editor_loc_background);
+        color: var(--editor_loc_color);
+    }
+
+    .line textarea.editor {
         background-color: var(--editor_background);
         color: var(--editor_color);
         border: none;
@@ -84,6 +89,9 @@
         min-width: 0;
         overflow-y: hidden;
         resize: none;
+        font-size: 12px;
+        padding: 0;
+        line-height: 12px;
     }
 
     textarea:focus {
