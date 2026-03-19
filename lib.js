@@ -2174,8 +2174,8 @@ function createFilesystem(){
                 current_line_indicator = ">"
             }
             conf = {
-                loc = "$lineno "
-                current_line_indicator = "$lineno>"
+                loc = " $lineno"
+                current_line_indicator = ">$lineno"
             }
             `
         ).split("\n")
@@ -2830,7 +2830,103 @@ class OS {
         contentElem.focus();
     }
 
+    parseFormatSpec(input) {
+        if (typeof input !== "string")
+            throw new SwagOSCommandError("Formatting: Format spec must be a string");
 
+        let i = 0;
+
+        const out = {
+            type: null,   // "f" | "b" | "a"
+            start: null,  // number | null
+            end: null,    // number | null
+            color: null,  // string | null
+            style: ""     // string (unique flags)
+        };
+
+        const seen = new Set();
+
+        function readUntil(ch) {
+            let start = i;
+            while (i < input.length && input[i] !== ch) i++;
+            if (i >= input.length)
+                throw new SwagOSCommandError("Formatting: Missing '" + ch + "'");
+            return input.slice(start, i);
+        }
+
+        while (i < input.length) {
+
+            // key
+            const key = readUntil("=");
+            i++; // skip '='
+
+            // value
+            const value = readUntil(";");
+            i++; // skip ';'
+
+            if (seen.has(key))
+                throw new SwagOSCommandError(`Formatting: Duplicate field '${key}'`);
+
+            seen.add(key);
+
+            switch (key) {
+
+                case "type":
+                    if (value !== "f" && value !== "b" && value !== "a")
+                        throw new SwagOSCommandError("Formatting: type must be 'f', 'b', or 'a'");
+                    out.type = value;
+                    break;
+
+                case "s": {
+                    if (!/^\d+$/.test(value))
+                        throw new SwagOSCommandError("Formatting: s (start) must be a non-negative integer");
+                    out.start = Number(value);
+                    break;
+                }
+
+                case "e": {
+                    if (!/^\d+$/.test(value))
+                        throw new SwagOSCommandError("Formatting: e (end) must be a non-negative integer");
+                    out.end = Number(value);
+                    break;
+                }
+
+                case "c":
+                    // allow any non-empty string (CSS color is validated later by the renderer)
+                    if (value.length === 0)
+                        throw new SwagOSCommandError("Formatting: c (color) cannot be empty");
+                    out.color = value;
+                    break;
+
+                case "t": {
+                    if (!/^[ibus]*$/.test(value))
+                        throw new SwagOSCommandError("Formatting: t (style) may only contain i, b, u, s");
+
+                    // normalize: unique characters, keep first appearance order
+                    let normalized = "";
+                    for (const ch of value) {
+                        if (!normalized.includes(ch))
+                            normalized += ch;
+                    }
+
+                    out.style = normalized;
+                    break;
+                }
+
+                default:
+                    throw new SwagOSCommandError(`Formatting: Unknown field '${key}'`);
+            }
+        }
+
+        if (out.type === null)
+            throw new SwagOSCommandError("Formatting: Missing required field 'type'");
+
+        // Optional sanity check
+        if (out.start !== null && out.end !== null && out.end < out.start)
+            throw new SwagOSCommandError("Formatting: e (end) cannot be less than s (start)");
+
+        return out;
+    }
 
 
     openEditor(file){
@@ -2879,11 +2975,15 @@ class OS {
 
             // fix
 
+            const baseLocIndicator = locIndicator;
+            const baseCurrentIndicator = currentLineIndicator;
+
             loc.textContent = lines
                 .map((_, i) => {
-                    locIndicator = locIndicator.replace("$lineno", (i + 1));
-                    currentLineIndicator = currentLineIndicator.replace("$lineno", (i + 1));
-                    i === currentLine ? currentLineIndicator : locIndicator
+                    const normal = baseLocIndicator.replace("$lineno", (i + 1));
+                    const current = baseCurrentIndicator.replace("$lineno", (i + 1));
+
+                    return i === currentLine ? current : normal;
                 })
                 .join("\n");
         }
