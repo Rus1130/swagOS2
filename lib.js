@@ -555,7 +555,7 @@ class FilesystemService {
 class SaviorService {
     static os = null;
     static enabled = false;
-    static notified = false;
+    static #notified = false;
 
     static watch(service){
         setInterval(() => {
@@ -575,18 +575,11 @@ class SaviorService {
         this.enabled = true;
         DiagnosticService.record("SaviorService_init");
 
-        SaviorService.watch(CommandExecService);
-        SaviorService.watch(CommandService);
-
-        setInterval(() => {
-            if(!this.enabled) return;
-            const lines = Array.from(this.os.elem.querySelectorAll(".line")).map(x => Array.from(x.children));
-            const lastLine = lines[lines.length - 1];
-
-            if(!this.notified && lastLine && !lastLine[1].classList.contains("commandline") && !lastLine[1].classList.contains("editor")){
-                this.os.commandLine();
+        ServiceManager.services.forEach(service => {
+            if(service.critical){
+                SaviorService.watch(service);
             }
-        }, 1000);
+        });
     }
 
     static enable(){
@@ -607,16 +600,21 @@ class SaviorService {
      */
     static notify(){
         if(!this.enabled) return;
-        if(this.notified) return;
-        this.notified = true;
+        if(this.#notified) return;
+        this.#notified = true;
         DiagnosticService.record("SaviorService_notify");
     }
 
     static unnotify(){
         if(!this.enabled) return;
-        if(this.notified == false) return;
-        this.notified = false;
+        if(this.#notified == false) return;
+        this.#notified = false;
         DiagnosticService.record("SaviorService_unnotify");
+    }
+
+    static notified(){
+        if(!this.enabled) return false;
+        return this.#notified;
     }
 }
 
@@ -1373,6 +1371,10 @@ function defineCommands(){
             loc: loc
         };
     });
+
+    // CommandService.defineCommand("shell_out", {
+
+    // })
 
     CommandService.defineCommand("obuffer", {
         options: {
@@ -2434,9 +2436,8 @@ class OS {
         });
 
         document.addEventListener("keyup", (e) => {
-            if(e.key === "q" && e.ctrlKey){
+            if(e.key === "q" && e.ctrlKey && !SaviorService.notified()){
                 e.preventDefault();
-                // abort
                 CommandExecService.continue();
             }
         });
