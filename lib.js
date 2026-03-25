@@ -2186,7 +2186,7 @@ function createFilesystem(){
                 loc = " $lineno"
                 current_line_indicator = ">$lineno"
             }
-            `
+            `, 12
         ).split("\n")
     );
 
@@ -2977,6 +2977,8 @@ class OS {
         const ecmdIn = document.createElement('div');
         const ecmdOut = document.createElement('div');
 
+        const styleDiv = document.createElement('div');
+
         ecmdInLine.appendChild(ecmdInLoc);
         ecmdInLine.appendChild(ecmdIn);
 
@@ -3024,8 +3026,8 @@ class OS {
         editor.addEventListener("input", () => {
             editor.style.height = "auto";
             editor.style.height = editor.scrollHeight + "px";
-
             updateLOC();
+            styleDiv.innerText = editor.value;
         });
 
         let ecmdInUse = false;
@@ -3096,7 +3098,6 @@ class OS {
             }
         });
 
-
         editorLine.appendChild(loc);
         editorLine.appendChild(editor);
 
@@ -3105,6 +3106,7 @@ class OS {
 
         this.elem.appendChild(ecmdInLine);
         this.elem.appendChild(ecmdOutLine);
+
         this.line(intro, "");
         this.line(`Press [F1] toggle between the editor and the command bar, type "?" there for commands.`, "");
         this.line("-".repeat(intro.length), "");
