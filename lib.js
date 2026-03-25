@@ -1104,6 +1104,10 @@ class OSFile {
         return this.#content;
     }
 
+    /**
+     * 
+     * @param {String[]} newContent 
+     */
     write(newContent) {
         this.#content = newContent;
         this.#size = OSFile.calculateSize(newContent);
@@ -1372,7 +1376,7 @@ function defineCommands(){
         };
     });
 
-    // CommandService.defineCommand("shell_out", {
+    // CommandService.defineCommand("formattedprint", {
 
     // })
 
@@ -1833,6 +1837,10 @@ function defineCommands(){
 
             const lines = [];
 
+            if(flags.spacing && flags.spacing < 1) throw new OSError("Spacing must be at least 1");
+
+            const spacing = flags.spacing ?? ConfigService.get("default_list_recursive_spacing");
+
             const listRecursive = (directory, prefix = "", level = 0) => {
                 if (level >= recurseAmount) return;
 
@@ -1842,8 +1850,6 @@ function defineCommands(){
 
                 entries.forEach((entry, index) => {
                     const isLast = index === lastIndex;
-
-                    const spacing = flags.spacing ?? 2;
 
                     // Tree characters
                     const branch = (isLast ? "└" : "├") + "─".repeat(spacing - 1);
@@ -2164,6 +2170,7 @@ function createFilesystem(){
             `
             timestamp_template = "d/mn/Y h:m:s.l"
             color_palette = "default"
+            default_list_recursive_spacing = 2
             `, 12
         ).split("\n")
     );
@@ -2951,13 +2958,30 @@ class OS {
         let locIndicator = styleObject[file.type].loc;
         let currentLineIndicator = styleObject[file.type].current_line_indicator;
 
-        const line = document.createElement('div');
+        const editorLine = document.createElement('div');
+        const ecmdInLine = document.createElement('div');
+        const ecmdOutLine = document.createElement('div');
 
-        line.classList.add('line');
+        editorLine.classList.add('line');
+        ecmdInLine.classList.add('line');
+        ecmdOutLine.classList.add('line');
 
         const loc = document.createElement('span');
+        const ecmdInLoc = document.createElement('span');
+        const ecmdOutLoc = document.createElement('span');
+
+        ecmdInLoc.textContent = "-";
+        ecmdOutLoc.textContent = "-";
 
         const editor = document.createElement('textarea');
+        const ecmdIn = document.createElement('div');
+        const ecmdOut = document.createElement('div');
+
+        ecmdInLine.appendChild(ecmdInLoc);
+        ecmdInLine.appendChild(ecmdIn);
+
+        ecmdOutLine.appendChild(ecmdOutLoc);
+        ecmdOutLine.appendChild(ecmdOut);
 
         editor.classList.add('editor');
         loc.classList.add('editor');
@@ -3004,23 +3028,87 @@ class OS {
             updateLOC();
         });
 
+        let ecmdInUse = false;
+
+        editor.addEventListener("keydown", (e) => {
+            if(e.key === "F1" && ecmdInUse == false){
+                ecmdInUse = true;
+                e.preventDefault();
+                ecmdIn.contentEditable = "true";
+                ecmdIn.focus();
+                ecmdInLoc.textContent = "ECMD>";
+            }
+        });
+
+        ecmdIn.addEventListener("keydown", (e) => {
+            if(e.key === "F1" && ecmdInUse){
+                ecmdInUse = false;
+                e.preventDefault();
+                ecmdIn.contentEditable = "false";
+                editor.focus();
+                ecmdInLoc.textContent = "-";
+            }
+
+            if(e.key === "Enter"){
+                e.preventDefault();
+
+                const command = ecmdIn.textContent.trim();
+
+                switch(command){
+                    case "s": {
+                        file.write(editor.value.split("\n"));
+                        ecmdOut.textContent = "File saved.";
+                    } break;
+
+                    case "q": {
+                        editor.readOnly = true;
+                        ecmdIn.contentEditable = "false";
+                        ecmdInLoc.textContent = "-";
+                        ecmdOut.textContent = "Exited editor.";
+                        CommandExecService.continue();
+                    } break;
+
+                    case "sq": {
+                        file.write(editor.value.split("\n"));
+                        editor.readOnly = true;
+                        ecmdIn.contentEditable = "false";
+                        ecmdInLoc.textContent = "-";
+                        ecmdOut.textContent = "File saved and exited editor.";
+                        CommandExecService.continue();
+                    } break;
+
+                    case "c": {
+                        ecmdOut.textContent = "";
+                    } break;
+
+                    case "?": {
+                        ecmdOut.innerHTML = `sq - save and quit<br>s  - save<br>q  - quit without saving<br>c  - clear this command output<br>?  - show this help message`;
+                    } break;
+                }
+
+                ecmdIn.textContent = "";
+            }
+        })
+
         document.addEventListener("selectionchange", () => {
             if(document.activeElement === editor){
                 updateLOC();
             }
         });
 
-        // editor.addEventListener("keyup", (e) => {
-        //     updateLOC();
-        // });
 
+        editorLine.appendChild(loc);
+        editorLine.appendChild(editor);
 
-        line.appendChild(loc);
-        line.appendChild(editor);
+        const intro = `--- Editing: ${file.fullName()} ---`;
         
 
-        const editorLine = this.line(`-- Editing ${file.fullName()} --`, "");
-        this.elem.appendChild(line);
+        this.elem.appendChild(ecmdInLine);
+        this.elem.appendChild(ecmdOutLine);
+        this.line(intro, "");
+        this.line(`Press [F1] toggle between the editor and the command bar, type "?" there for commands.`, "");
+        this.line("-".repeat(intro.length), "");
+        this.elem.appendChild(editorLine);
         editor.focus();
     }
 }
