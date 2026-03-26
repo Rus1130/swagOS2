@@ -876,8 +876,30 @@ class CommandExecService {
     }
 }
 
+class BackgroundTaskService {
+    static tasks = new Map();
+
+    static taskNumber = 0;
+
+    static init(os){
+        this.os = os;
+        this.enabled = true;
+        DiagnosticService.record("BackgroundTaskService_init");
+    }
+
+    enable(){
+        this.enabled = true;
+        DiagnosticService.record("BackgroundTaskService_enable");
+    }
+
+    disable(){
+        this.enabled = false;
+        DiagnosticService.record("BackgroundTaskService_disable");
+    }
+}
+
 class ServiceManager {
-    static services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService, ColorService];
+    static services = [OutputService, CommandExecService, CommandService, DiagnosticService, SaviorService, FilesystemService, ConfigService, ColorService, BackgroundTaskService];
 }
 
 ServiceManager.services.forEach(service => {
@@ -927,6 +949,12 @@ ServiceManager.services.forEach(service => {
         case ColorService: {
             service.abbreviation = "Rsrv";
             service.shortName = "color";
+            service.critical = false;
+        } break;
+
+        case BackgroundTaskService: {
+            service.abbreviation = "Bsrv";
+            service.shortName = "background";
             service.critical = false;
         } break;
     }
@@ -2125,6 +2153,8 @@ function defineCommands(){
     }, ({args, flags}, os, signal) => {
         const path = args[0];
 
+        // if in a stream, use the stream content as what to edit
+
         try {
             const file = FilesystemService.resolvePath(path, "full");
             if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
@@ -2141,8 +2171,27 @@ function defineCommands(){
         }
     })
 
+    CommandService.defineCommand("bgtask", {
+        options: {
+            description: "Runs a command in the background and outputs its result when it's done",
+            alias: "bgt",
+            hidden: true,
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "option",
+                description: "The command to run in the background",
+                required: true,
+                options: ["start", "stop"],
+            },
+        ],
+    }, ({args, flags}, os, signal) => {
+        const option = args[0];
+    });
+    
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "bgtask"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -2373,6 +2422,7 @@ class OS {
         createFilesystem();
         ConfigService.init(this);
         ColorService.init(this);
+        BackgroundTaskService.init(this);
         this.end = performance.now();
 
         console.log(`OS initialized in ${this.end - this.start}ms`);
