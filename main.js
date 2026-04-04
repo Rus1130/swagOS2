@@ -4,7 +4,6 @@ const os = new OS(document.getElementById('terminal'));
 
 os.line('Welcome to swagOS2 ===', "===");
 os.commandLine();
-os.sendCommand("p t")
 //os.sendCommand("bgt start")
 //os.sendCommand("cls | ef w")
 //os.sendCommand("? help -v")

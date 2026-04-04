@@ -2,69 +2,61 @@ class ImageReader {
     constructor(type, content) {
 
         this.type = type;
+        this.raw = content;
 
-        if(type == "bimg"){
+        if(type == "pbm"){
             this.width = parseInt(content[1]);
             this.height = parseInt(content[2]);
             this.colorCount = parseInt(content[3]);
 
             if(this.colorCount > 36){
-                throw new SwagOSCommandError("Color count exceeds maximum of 36");
+                throw new OSError("Color count exceeds maximum of 36");
             }
 
             this.palette = content.slice(4, 4 + this.colorCount);
-            this.padAmount = parseInt(content[4 + this.colorCount]);
-            this.dataStr = content[4 + this.colorCount + 1];
+            this.dataStr = content[4 + this.colorCount];
         }
-    }
-
-    decodeRLE() {
-        const pixels = [];
-        const str = this.dataStr;
-        const pad = this.padAmount;
-        let i = 0;
-
-        while (i < str.length) {
-            const maybeCount = str.slice(i, i + pad);
-            if (str[i + pad] === '|' && /^[0-9a-z]+$/.test(maybeCount)) {
-                const count = parseInt(maybeCount, 36); // base-36!
-                const pixel = str[i + pad + 1];
-                for (let k = 0; k < count; k++) {
-                    pixels.push(pixel);
-                }
-                i += pad + 2;
-            } else {
-                pixels.push(str[i]);
-                i++;
-            }
-        }
-
-        return pixels;
     }
 
     toBitmap() {
-        const flatPixels = this.decodeRLE();
-        // if (flatPixels.length !== this.width * this.height) {
-        //     throw new Error(`Decoded pixel length ${flatPixels.length} does not match width*height ${this.width * this.height}`);
-        // }
 
-        const image = [];
-        for (let y = 0; y < this.height; y++) {
-            const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
-
-            for(let x = 0; x < row.length; x++){
-                if(row[x] === "#") row[x] = "transparent";
-                else row[x] = "#"+this.palette[parseInt(row[x], 36)];
-            }
-
-            image.push(row);
+        if(this.dataStr === undefined){
+            throw new OSError("Failed to parse image data")
         }
 
-        return image;
+        const flatPixels = this.dataStr.split(" ");
+
+        if (flatPixels.length !== this.width * this.height) {
+            throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
+        }
+
+        try {
+            const image = [];
+            for (let y = 0; y < this.height; y++) {
+                const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
+
+                for(let x = 0; x < row.length; x++){
+
+                    if(this.palette[parseInt(row[x], 36)] === undefined){
+                        throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
+                    }
+
+                    if(row[x] === "#") row[x] = "transparent";
+                    else row[x] = "#"+this.palette[parseInt(row[x], 36)];
+                }
+
+                image.push(row);
+            }
+
+            return image;
+        } catch (e) {
+            if(e instanceof OSError) throw e;
+            else throw new OSError("Failed to parse image data");
+        }
     }
 
     read(){
-        if(this.type === "bimg") return this.toBitmap();
+        if(this.type === "pbm") return this.toBitmap();
     }
 }
 
@@ -719,19 +711,24 @@ class OutputService {
 
     static flush() {
         if(!this.enabled) return;
+
+        let lineTypes = new Set();
+
         for(const line of this.buffer){
+            lineTypes.add(line.type);
+
             if(line.type === "line") this.os.line(line.content, line.loc);
             else if(line.type === "error") this.os.error(line.content);
             else if(line.type === "severe_error") this.os.severe(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
-            else if(line.type === "bitmap") this.os.bitmapLine(line.content);
+            else if(line.type === "pixel_matrix") this.os.pixelMatrix(line.content);
             else {
                 console.error(`OutputService: Unknown line type: ${line.type}`, line);
                 throw new OSError(`OutputService: Unknown line type: ${line.type}`);
             }
         }
-        DiagnosticService.record("OutputService_flush");
+        DiagnosticService.record(`OutputService_flush ${Array.from(lineTypes).join(",")}`);
         this.buffer.length = 0;
     }
 
@@ -2031,10 +2028,10 @@ function defineCommands(){
         try {
             if(flags.raw) return outputRaw(file);
             
-            if(file.type === "bimg"){
-                const reader = new ImageReader("bimg", file.read());
+            if(file.type === "pbm"){
+                const reader = new ImageReader("pbm", file.read());
 
-                return [{ type: "bitmap", content: reader.read() }];
+                return [{ type: "pixel_matrix", content: reader.read() }];
             }
             
             return outputRaw(file);
@@ -2294,6 +2291,7 @@ function createFilesystem(){
     DiagnosticService.note("Creating filesystem...");
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
+    FilesystemService.createDirectory("images", "/documents")
     FilesystemService.createDirectory("config", "/")
     FilesystemService.createDirectory("data", "/")
 
@@ -2330,8 +2328,8 @@ function createFilesystem(){
         ).split("\n")
     );
 
-    // buh
-    FilesystemService.createFile("test", "bimg", "/", ["bimg","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","1","3h|78|39|70m|78|39|70m|75|32239|70k|77|3223|37|70k|74|3226|37|70773|04|73|04|703|74|3226|37|70700703|703|703|703|7c|37|73|07703|703|703|708|73|8b|7003|7007703|7077008|73|8h|700773|03|709|73|8j|700704|709|73|8k|78|09|73|8m|70e|73|8m|70e|73|8m|700d|73|8m|700d|73|8m|706|78|93|8m|90e|93|8l|909010|903|90z|903|9018|9"])
+
+    FilesystemService.createFile("test", "pbm", "/documents/images", ["pbm","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
 
     FilesystemService.createFile("default", "conf", "/data/palettes", 
         normalizeIndentation(
@@ -2909,8 +2907,7 @@ class OS {
         return line;
     }
 
-    bitmapLine(content){
-
+    pixelMatrix(content){
         const pixel = "██";
 
         const pixelSize = ConfigService.get("pixel_size") || 12;
@@ -2932,12 +2929,7 @@ class OS {
             for(let j = 0; j < contentLine.length; j++){
 
                 const color = contentLine[j];
-
-                contentElem.style.color = color;
-                contentElem.style.backgroundColor = color;
-
-
-                contentElem.innerHTML += `<span style="color: ${color}">${pixel}</span>`;
+                contentElem.innerHTML += `<span style="color: transparent; background-color: ${color}">${pixel}</span>`;
             }
 
             line.classList.add('line');
@@ -3023,7 +3015,7 @@ class OS {
 
     parseFormatSpec(input) {
         if (typeof input !== "string")
-            throw new SwagOSCommandError("Formatting: Format spec must be a string");
+            throw new OSError("Formatting: Format spec must be a string");
 
         let i = 0;
 
@@ -3041,7 +3033,7 @@ class OS {
             let start = i;
             while (i < input.length && input[i] !== ch) i++;
             if (i >= input.length)
-                throw new SwagOSCommandError("Formatting: Missing '" + ch + "'");
+                throw new OSError("Formatting: Missing '" + ch + "'");
             return input.slice(start, i);
         }
 
@@ -3056,7 +3048,7 @@ class OS {
             i++; // skip ';'
 
             if (seen.has(key))
-                throw new SwagOSCommandError(`Formatting: Duplicate field '${key}'`);
+                throw new OSError(`Formatting: Duplicate field '${key}'`);
 
             seen.add(key);
 
@@ -3064,20 +3056,20 @@ class OS {
 
                 case "type":
                     if (value !== "f" && value !== "b" && value !== "a")
-                        throw new SwagOSCommandError("Formatting: type must be 'f', 'b', or 'a'");
+                        throw new OSError("Formatting: type must be 'f', 'b', or 'a'");
                     out.type = value;
                     break;
 
                 case "s": {
                     if (!/^\d+$/.test(value))
-                        throw new SwagOSCommandError("Formatting: s (start) must be a non-negative integer");
+                        throw new OSError("Formatting: s (start) must be a non-negative integer");
                     out.start = Number(value);
                     break;
                 }
 
                 case "e": {
                     if (!/^\d+$/.test(value))
-                        throw new SwagOSCommandError("Formatting: e (end) must be a non-negative integer");
+                        throw new OSError("Formatting: e (end) must be a non-negative integer");
                     out.end = Number(value);
                     break;
                 }
@@ -3085,13 +3077,13 @@ class OS {
                 case "c":
                     // allow any non-empty string (CSS color is validated later by the renderer)
                     if (value.length === 0)
-                        throw new SwagOSCommandError("Formatting: c (color) cannot be empty");
+                        throw new OSError("Formatting: c (color) cannot be empty");
                     out.color = value;
                     break;
 
                 case "t": {
                     if (!/^[ibus]*$/.test(value))
-                        throw new SwagOSCommandError("Formatting: t (style) may only contain i, b, u, s");
+                        throw new OSError("Formatting: t (style) may only contain i, b, u, s");
 
                     // normalize: unique characters, keep first appearance order
                     let normalized = "";
@@ -3105,16 +3097,16 @@ class OS {
                 }
 
                 default:
-                    throw new SwagOSCommandError(`Formatting: Unknown field '${key}'`);
+                    throw new OSError(`Formatting: Unknown field '${key}'`);
             }
         }
 
         if (out.type === null)
-            throw new SwagOSCommandError("Formatting: Missing required field 'type'");
+            throw new OSError("Formatting: Missing required field 'type'");
 
         // Optional sanity check
         if (out.start !== null && out.end !== null && out.end < out.start)
-            throw new SwagOSCommandError("Formatting: e (end) cannot be less than s (start)");
+            throw new OSError("Formatting: e (end) cannot be less than s (start)");
 
         return out;
     }
