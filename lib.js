@@ -1,3 +1,73 @@
+class ImageReader {
+    constructor(type, content) {
+
+        this.type = type;
+
+        if(type == "bimg"){
+            this.width = parseInt(content[1]);
+            this.height = parseInt(content[2]);
+            this.colorCount = parseInt(content[3]);
+
+            if(this.colorCount > 36){
+                throw new SwagOSCommandError("Color count exceeds maximum of 36");
+            }
+
+            this.palette = content.slice(4, 4 + this.colorCount);
+            this.padAmount = parseInt(content[4 + this.colorCount]);
+            this.dataStr = content[4 + this.colorCount + 1];
+        }
+    }
+
+    decodeRLE() {
+        const pixels = [];
+        const str = this.dataStr;
+        const pad = this.padAmount;
+        let i = 0;
+
+        while (i < str.length) {
+            const maybeCount = str.slice(i, i + pad);
+            if (str[i + pad] === '|' && /^[0-9a-z]+$/.test(maybeCount)) {
+                const count = parseInt(maybeCount, 36); // base-36!
+                const pixel = str[i + pad + 1];
+                for (let k = 0; k < count; k++) {
+                    pixels.push(pixel);
+                }
+                i += pad + 2;
+            } else {
+                pixels.push(str[i]);
+                i++;
+            }
+        }
+
+        return pixels;
+    }
+
+    toBitmap() {
+        const flatPixels = this.decodeRLE();
+        // if (flatPixels.length !== this.width * this.height) {
+        //     throw new Error(`Decoded pixel length ${flatPixels.length} does not match width*height ${this.width * this.height}`);
+        // }
+
+        const image = [];
+        for (let y = 0; y < this.height; y++) {
+            const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
+
+            for(let x = 0; x < row.length; x++){
+                if(row[x] === "#") row[x] = "transparent";
+                else row[x] = "#"+this.palette[parseInt(row[x], 36)];
+            }
+
+            image.push(row);
+        }
+
+        return image;
+    }
+
+    read(){
+        if(this.type === "bimg") return this.toBitmap();
+    }
+}
+
 class ColorService {
     static enabled = false;
     static os = null;
@@ -655,6 +725,7 @@ class OutputService {
             else if(line.type === "severe_error") this.os.severe(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
+            else if(line.type === "bitmap") this.os.bitmapLine(line.content);
             else {
                 console.error(`OutputService: Unknown line type: ${line.type}`, line);
                 throw new OSError(`OutputService: Unknown line type: ${line.type}`);
@@ -1933,27 +2004,46 @@ function defineCommands(){
                 name: "file_path",
                 description: "The path of the file to read",
                 required: true,
+            },
+            {
+                type: "flag",
+                name: "raw",
+                short: "r",
+                description: "Outputs raw file content",
+                required: false,
+                datatype: "boolean",
             }
         ]
     }, ({args, pipe, flags}, os, signal) => {
         const path = args[0];
 
-        try {
-            const file = FilesystemService.resolvePath(path, "full");
-            if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
+        const file = FilesystemService.resolvePath(path, "full");
+        if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
 
-            const lines = [{ type: "line", content: `--- Contents of "${file.fullName()}" ---`, loc: "" }];
-
+        function outputRaw(file) {
+            const lines = [{ type: "line", content: `--- ${flags.raw ? "Raw " : ""}Contents of "${file.fullName()}" ---`, loc: "" }];
             file.read().forEach(line => {
                 lines.push({ type: "line", content: line, loc: ":" });
-            })
-
+            });
             return lines;
-        } catch (e) {
+        }
+
+        try {
+            if(flags.raw) return outputRaw(file);
+            
+            if(file.type === "bimg"){
+                const reader = new ImageReader("bimg", file.read());
+
+                return [{ type: "bitmap", content: reader.read() }];
+            }
+            
+            return outputRaw(file);
+        } catch(e) {
+            console.log(e);
             if(e instanceof OSError) return { type: "error", content: e.message, loc: "" };
-            else { 
+            else {
                 console.error(e);
-                return { type: "error", content: `An unexpected error occurred while reading the file. Check console for details.`, loc: "" }; 
+                return { type: "error", content: `An unexpected error occurred while reading the file. Check console for details.`, loc: "" };
             }
         }
     });
@@ -2220,6 +2310,7 @@ function createFilesystem(){
             timestamp_template = "d/mn/Y h:m:s.l"
             color_palette = "default"
             default_list_recursive_spacing = 2
+            pixel_size = 12
             `, 12
         ).split("\n")
     );
@@ -2238,6 +2329,9 @@ function createFilesystem(){
             `, 12
         ).split("\n")
     );
+
+    // buh
+    FilesystemService.createFile("test", "bimg", "/", ["bimg","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","1","3h|78|39|70m|78|39|70m|75|32239|70k|77|3223|37|70k|74|3226|37|70773|04|73|04|703|74|3226|37|70700703|703|703|703|7c|37|73|07703|703|703|708|73|8b|7003|7007703|7077008|73|8h|700773|03|709|73|8j|700704|709|73|8k|78|09|73|8m|70e|73|8m|70e|73|8m|700d|73|8m|700d|73|8m|706|78|93|8m|90e|93|8l|909010|903|90z|903|9018|9"])
 
     FilesystemService.createFile("default", "conf", "/data/palettes", 
         normalizeIndentation(
@@ -2813,6 +2907,45 @@ class OS {
         this.elem.appendChild(line);
 
         return line;
+    }
+
+    bitmapLine(content){
+
+        const pixel = "██";
+
+        const pixelSize = ConfigService.get("pixel_size") || 12;
+
+        for(let i = 0; i < content.length; i++){
+            const contentLine = content[i];
+
+            const line = document.createElement('div');
+            const contentElem = document.createElement('div');
+            const locElem = document.createElement('span');
+
+            locElem.textContent = "";
+
+            line.style.fontSize = pixelSize + "px";
+            line.style.lineHeight = pixelSize + "px";
+            line.style.height = pixelSize + "px";
+            line.style.marginBottom = "0px";
+
+            for(let j = 0; j < contentLine.length; j++){
+
+                const color = contentLine[j];
+
+                contentElem.style.color = color;
+                contentElem.style.backgroundColor = color;
+
+
+                contentElem.innerHTML += `<span style="color: ${color}">${pixel}</span>`;
+            }
+
+            line.classList.add('line');
+            line.appendChild(locElem);
+            line.appendChild(contentElem);
+            this.elem.appendChild(line);
+
+        }
     }
 
     savior(content){

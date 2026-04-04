@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Bitmap Editor</title>
+
+<style>
+    body {
+        margin: 0;
+        font-family: Arial, sans-serif;
+        background: #eee;
+    }
+
+    button:focus, input:focus, select:focus, textarea:focus, [contenteditable]:focus {
+        outline: none;
+    }
+
+    #controls {
+        background: #ddd;
+        padding: 10px;
+        display: flex;
+        gap: 20px;
+        align-items: center;
+        border-bottom: 2px solid #aaa;
+        flex-wrap: wrap;
+    }
+
+    #palette {
+        background: #ccc;
+        padding: 10px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        border-bottom: 2px solid #aaa;
+    }
+
+    .color-btn {
+        width: 32px;
+        height: 32px;
+        border: 2px solid #444;
+        cursor: pointer;
+        box-sizing: border-box;
+    }
+
+    .color-selected {
+        border: 4px solid black !important;
+    }
+
+    #grid {
+        margin: 20px auto;
+        display: grid;
+        width: max-content;
+        border: 2px solid #444;
+        background: #eee;
+        user-select: none;
+    }
+
+    .pixel {
+        width: 20px;
+        height: 20px;
+        border: 1px solid #ccc;
+        cursor: pointer;
+
+        background-image:
+            linear-gradient(45deg, #ccc 25%, transparent 25%),
+            linear-gradient(-45deg, #ccc 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #ccc 75%),
+            linear-gradient(-45deg, transparent 75%, #ccc 75%);
+        background-size: 10px 10px;
+        background-position: 0 0, 0 5px, 5px -5px, -5px 0px;
+
+        position: relative;
+    }
+
+    .pixel .color-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+    }
+
+    .pixel.rect-preview .color-overlay {
+        opacity: 0.5;
+    }
+
+    #fill-button.active,
+    #rect-button.active {
+        background: #555;
+        color: white;
+        border: 2px solid black;
+    }
+
+    #clear-button {
+        background: #c0392b;
+        color: white;
+        border: 2px solid #922b21;
+    }
+
+    #clear-button:hover {
+        background: #e74c3c;
+    }
+</style>
+</head>
+<body>
+
+<div id="controls">
+
+    <div>
+        Grid:
+        <input type="number" id="grid-width" value="32" min="1" style="width:50px;">
+        ×
+        <input type="number" id="grid-height" value="24" min="1" style="width:50px;">
+        <button onclick="applyGridSize()">Apply</button>
+    </div>
+
+    <div>
+        Add Color:
+        <input type="color" id="new-color-picker" value="#888888">
+        <button onclick="addColor()">Add</button>
+    </div>
+
+    <button onclick="toFile()">Export as File</button>
+    <button onclick="exportAsArray()">Export as Array</button>
+    <button id="fill-button" onclick="toggleFillTool()">Flood Fill</button>
+    <button id="rect-button" onclick="toggleRectTool()">Rectangle Tool</button>
+    <button id="clear-button" onclick="clearCanvas()">Clear Canvas</button>
+
+</div>
+
+<div id="palette"></div>
+<div id="grid"></div>
+
+<script>
+    let gridWidth = 32;
+    let gridHeight = 24;
+
+    let paletteColors = [
+        "#000000",
+        "#FFFFFF",
+        "#FF0000",
+        "#00FF00",
+        "#0000FF",
+        "#FFFF00",
+        "#FF00FF",
+        "#00FFFF",
+        "#800000",
+        "#008000",
+        "#000080",
+        "#808000",
+        "#800080",
+        "#008080",
+        "#C0C0C0",
+        "#808080",
+    ];
+    let currentColorIndex = 1;
+    let fillMode = false;
+    let rectMode = false;
+    let mouseDown = false;
+
+    let rectStartIndex = null;
+    let rectCurrentIndex = null;
+    let rectPreviewIndices = new Set();
+
+    document.body.onmousedown = () => mouseDown = true;
+    document.body.onmouseup = () => {
+        mouseDown = false;
+        if (rectMode && rectStartIndex !== null) {
+            commitRect();
+        }
+    };
+
+    // -------------------------------------
+    // PALETTE
+    // -------------------------------------
+    function buildPalette() {
+        const p = document.getElementById("palette");
+        p.innerHTML = "";
+
+        const eraser = document.createElement("div");
+        eraser.className = "color-btn";
+        eraser.style.border = "2px dashed #555";
+        eraser.style.background = "transparent";
+
+        if (currentColorIndex === 0)
+            eraser.classList.add("color-selected");
+
+        eraser.onclick = () => {
+            currentColorIndex = 0;
+            buildPalette();
+        };
+
+        p.appendChild(eraser);
+
+        paletteColors.forEach((color, i) => {
+            const index = i + 1;
+            const sw = document.createElement("div");
+            sw.className = "color-btn";
+            sw.style.background = color;
+
+            if (currentColorIndex === index)
+                sw.classList.add("color-selected");
+
+            sw.onclick = () => {
+                currentColorIndex = index;
+                buildPalette();
+            };
+
+            sw.oncontextmenu = (e) => {
+                e.preventDefault();
+                if (currentColorIndex === index) return;
+                paletteColors.splice(i, 1);
+                buildPalette();
+            };
+
+            p.appendChild(sw);
+        });
+    }
+
+    // -------------------------------------
+    // GRID
+    // -------------------------------------
+    function buildGrid() {
+        const g = document.getElementById("grid");
+        g.innerHTML = "";
+        g.style.gridTemplateColumns = `repeat(${gridWidth}, 20px)`;
+
+        for (let i = 0; i < gridWidth * gridHeight; i++) {
+            const px = document.createElement("div");
+            px.className = "pixel";
+            px.dataset.color = "0";
+            px.dataset.index = i;
+
+            px.onmousedown = (e) => {
+                e.preventDefault();
+                if (rectMode) {
+                    rectStartIndex = i;
+                    rectCurrentIndex = i;
+                    updateRectPreview(i, i);
+                } else {
+                    paintPixel(px);
+                }
+            };
+
+            px.onmouseover = () => {
+                if (!mouseDown) return;
+                if (rectMode) {
+                    if (rectStartIndex !== null) {
+                        rectCurrentIndex = i;
+                        updateRectPreview(rectStartIndex, i);
+                    }
+                } else {
+                    paintPixel(px);
+                }
+            };
+
+            g.appendChild(px);
+        }
+    }
+
+    // -------------------------------------
+    // PAINTING
+    // -------------------------------------
+    function paintPixel(px, colorIndex = currentColorIndex) {
+        let overlay = px.querySelector(".color-overlay");
+        if (!overlay) {
+            overlay = document.createElement("div");
+            overlay.className = "color-overlay";
+            px.appendChild(overlay);
+        }
+
+        px.dataset.color = colorIndex;
+
+        if (colorIndex === 0) {
+            overlay.style.backgroundColor = "transparent";
+        } else {
+            overlay.style.backgroundColor = paletteColors[colorIndex - 1];
+        }
+    }
+
+    function applyGridSize() {
+        gridWidth = parseInt(document.getElementById("grid-width").value);
+        gridHeight = parseInt(document.getElementById("grid-height").value);
+        buildGrid();
+    }
+
+    function addColor() {
+        const newColor = document.getElementById("new-color-picker").value;
+        paletteColors.push(newColor);
+        currentColorIndex = paletteColors.length;
+        buildPalette();
+    }
+
+    // -------------------------------------
+    // CLEAR CANVAS
+    // -------------------------------------
+    function clearCanvas() {
+        document.querySelectorAll(".pixel").forEach(px => {
+            px.dataset.color = "0";
+            const overlay = px.querySelector(".color-overlay");
+            if (overlay) overlay.style.backgroundColor = "transparent";
+        });
+    }
+
+    // -------------------------------------
+    // FLOOD FILL
+    // -------------------------------------
+    function toggleFillTool() {
+        fillMode = !fillMode;
+        if (fillMode) {
+            rectMode = false;
+            document.getElementById("rect-button").classList.remove("active");
+            clearRectPreview();
+            rectStartIndex = null;
+        }
+        document.getElementById("fill-button").classList.toggle("active", fillMode);
+    }
+
+    function floodFill(startPixel, targetColor, replacementColor) {
+        if (targetColor === replacementColor) return;
+
+        const pixels = [...document.querySelectorAll(".pixel")];
+        const index = pixels.indexOf(startPixel);
+        const w = gridWidth;
+        const stack = [index];
+
+        while (stack.length > 0) {
+            const i = stack.pop();
+            if (i < 0 || i >= pixels.length) continue;
+
+            const px = pixels[i];
+            if (px.dataset.color != targetColor) continue;
+
+            px.dataset.color = replacementColor;
+            let overlay = px.querySelector(".color-overlay");
+            if (!overlay) {
+                overlay = document.createElement("div");
+                overlay.className = "color-overlay";
+                px.appendChild(overlay);
+            }
+            overlay.style.backgroundColor =
+                replacementColor == 0 ? "transparent" : paletteColors[replacementColor - 1];
+
+            if (i % w !== 0) stack.push(i - 1);
+            if (i % w !== w - 1) stack.push(i + 1);
+            stack.push(i - w);
+            stack.push(i + w);
+        }
+    }
+
+    document.addEventListener("click", (e) => {
+        if (!fillMode) return;
+        const px = e.target.closest(".pixel");
+        if (!px) return;
+        floodFill(px, px.dataset.color, currentColorIndex);
+    });
+
+    // -------------------------------------
+    // RECTANGLE TOOL
+    // -------------------------------------
+    function toggleRectTool() {
+        rectMode = !rectMode;
+        if (rectMode) {
+            fillMode = false;
+            document.getElementById("fill-button").classList.remove("active");
+        }
+        document.getElementById("rect-button").classList.toggle("active", rectMode);
+        clearRectPreview();
+        rectStartIndex = null;
+    }
+
+    function getRectIndices(startIdx, endIdx) {
+        const startRow = Math.floor(startIdx / gridWidth);
+        const startCol = startIdx % gridWidth;
+        const endRow = Math.floor(endIdx / gridWidth);
+        const endCol = endIdx % gridWidth;
+
+        const minRow = Math.min(startRow, endRow);
+        const maxRow = Math.max(startRow, endRow);
+        const minCol = Math.min(startCol, endCol);
+        const maxCol = Math.max(startCol, endCol);
+
+        const indices = [];
+        for (let r = minRow; r <= maxRow; r++) {
+            for (let c = minCol; c <= maxCol; c++) {
+                indices.push(r * gridWidth + c);
+            }
+        }
+        return indices;
+    }
+
+    function updateRectPreview(startIdx, currentIdx) {
+        clearRectPreview();
+
+        const indices = getRectIndices(startIdx, currentIdx);
+        const pixels = document.querySelectorAll(".pixel");
+        const color = currentColorIndex === 0 ? "transparent" : paletteColors[currentColorIndex - 1];
+
+        indices.forEach(i => {
+            const px = pixels[i];
+            if (!px) return;
+            px.classList.add("rect-preview");
+
+            let overlay = px.querySelector(".color-overlay");
+            if (!overlay) {
+                overlay = document.createElement("div");
+                overlay.className = "color-overlay";
+                px.appendChild(overlay);
+            }
+            overlay.style.backgroundColor = color;
+            rectPreviewIndices.add(i);
+        });
+    }
+
+    function clearRectPreview() {
+        const pixels = document.querySelectorAll(".pixel");
+        rectPreviewIndices.forEach(i => {
+            const px = pixels[i];
+            if (!px) return;
+            px.classList.remove("rect-preview");
+
+            const storedColor = parseInt(px.dataset.color);
+            const overlay = px.querySelector(".color-overlay");
+            if (overlay) {
+                overlay.style.backgroundColor =
+                    storedColor === 0 ? "transparent" : (paletteColors[storedColor - 1] || "transparent");
+            }
+        });
+        rectPreviewIndices.clear();
+    }
+
+    function commitRect() {
+        const pixels = document.querySelectorAll(".pixel");
+        rectPreviewIndices.forEach(i => {
+            const px = pixels[i];
+            if (!px) return;
+            px.classList.remove("rect-preview");
+            paintPixel(px, currentColorIndex);
+        });
+        rectPreviewIndices.clear();
+        rectStartIndex = null;
+        rectCurrentIndex = null;
+    }
+
+    // -------------------------------------
+    // EXPORT
+    // -------------------------------------
+    function toFile() {
+        let file = [];
+
+        file.push("bimg");
+        file.push(gridWidth);
+        file.push(gridHeight);
+        file.push(paletteColors.length);
+        file.push(...paletteColors.map(c => c.replace("#", "")));
+
+        const padding = Math.ceil(Math.log(paletteColors.length + 1) / Math.log(36));
+        file.push(padding);
+
+        const img = Array.from(document.getElementById("grid").children)
+            .map(c => +c.getAttribute("data-color"))
+            .map(value => {
+                if (value == 0) return "#";
+                return (value - 1).toString(36).padStart(padding, "0");
+            });
+
+        file = file.map(v => v.toString());
+        file.push(compressRLE(img.join("")).join(""));
+        console.log(JSON.stringify(file));
+    }
+
+    function compressRLE(str) {
+        let result = [];
+        let count = 1;
+
+        for (let i = 1; i <= str.length; i++) {
+            if (str[i] === str[i - 1]) {
+                count++;
+            } else {
+                if (count >= 3) {
+                    result.push(`${count.toString(36)}|${str[i - 1]}`);
+                } else {
+                    if (count == 2) result.push(str[i - 1], str[i - 1]);
+                    else result.push(str[i - 1]);
+                }
+                count = 1;
+            }
+        }
+
+        return result;
+    }
+
+    function exportAsArray() {
+        const array = JSON.stringify(
+            Array.from(document.getElementById("grid").children).map(c => c.getAttribute("data-color"))
+        );
+        navigator.clipboard.writeText(array).then(() => {
+            alert("Grid data copied to clipboard!");
+        }).catch(err => {
+            alert("Failed to copy: " + err);
+        });
+    }
+
+    gridWidth = 40; 
+
+    // INIT
+    buildPalette();
+    buildGrid();
+
+    const defaultGrid = JSON.parse('["8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","4","4","4","4","4","4","4","4","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","4","4","4","4","4","4","4","4","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","4","4","4","4","4","3","3","4","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","4","4","4","4","4","4","4","3","3","4","4","4","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","4","4","4","4","3","3","4","4","4","4","4","4","8","8","8","8","8","8","8","1","8","8","1","1","1","8","8","8","8","1","1","1","8","8","8","8","1","8","8","8","4","4","4","4","3","3","4","4","4","4","4","4","8","8","8","8","8","8","8","1","8","1","1","8","1","8","8","8","1","8","8","8","1","8","8","8","1","8","8","8","4","4","4","4","4","4","4","4","4","4","4","4","8","8","8","8","8","8","8","1","1","1","8","8","1","8","8","8","1","8","8","8","1","8","8","8","1","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","1","1","8","8","8","1","1","8","8","1","8","8","8","1","8","8","1","1","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","1","8","8","1","1","1","8","8","8","1","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","1","8","1","8","8","8","8","1","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","1","1","1","1","1","1","1","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","1","8","8","8","8","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","1","8","8","8","8","8","8","8","8","8","8","8","8","8","9","9","9","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","8","1","8","8","8","8","8","8","10","10","10","10","10","10","10","10","9","9","9","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","1","10","10","10","10","10","10","10","10","10","10","10","10","10","10","9","9","9","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","1","10","1","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","1","10","10","10","1","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","1","10","10","10","1","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10","10"]');
+
+    defaultGrid.forEach((colorIndex, i) => {
+        const px = document.querySelectorAll(".pixel")[i];
+        if (colorIndex === "0") return;
+
+        const overlay = document.createElement("div");
+        overlay.className = "color-overlay";
+        overlay.style.backgroundColor = paletteColors[parseInt(colorIndex) - 1];
+        px.dataset.color = colorIndex;
+        px.appendChild(overlay);
+    });
+
+    toFile();
+</script>
+
+</body>
+</html>
