@@ -1,0 +1,72 @@
+<canvas id="c"></canvas>
+
+<script>
+
+    // test - https://www.pixilart.com/art/windows-xp-sr5z78d21d9e58aws3
+    // 300x180
+
+    // test2 - https://www.pixilart.com/art/anomaly-sr5z08db741fc6aws3
+
+
+const bitmap = []
+
+async function scanPixels(imgSrc, width, height) {
+    const img = new Image();
+    img.src = imgSrc;
+    await img.decode();
+
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+
+    canvas.width = width;
+    canvas.height = height;
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0, width, height);
+
+    // Grab the entire pixel buffer ONCE
+    const data = ctx.getImageData(0, 0, width, height).data;
+
+    // Loop through pixels
+    for (let y = 0; y < height; y++) {
+
+        let row = []
+
+        for (let x = 0; x < width; x++) {
+
+            const i = (y * width + x) * 4;
+
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const a = data[i + 3];
+
+            // Do whatever you want with the pixel color
+            console.log(`(${x},${y}) → rgba(${r},${g},${b},${a})`);
+
+            // turn it into a hex number, no alpha
+
+            let hex = (r << 16) | (g << 8) | b;
+
+            // push it into the bitmap
+
+            row.push(hex.toString(16).padStart(6, "0"))
+        }
+
+        bitmap.push(row.join(" "))
+    }
+}
+
+function copyToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        console.log("Copied to clipboard");
+    }).catch(err => {
+        console.error("Could not copy text: ", err);
+    });
+}
+
+scanPixels("stabby.png", 330, 400).then(() => {
+    console.log(JSON.stringify(bitmap))
+    copyToClipboard(JSON.stringify(bitmap))
+})
+</script>

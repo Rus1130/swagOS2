@@ -1,10 +1,12 @@
+import IMAGES from "./longfiles.js";
+
 class ImageReader {
     constructor(type, content) {
 
         this.type = type;
         this.raw = content;
 
-        if(type == "pbm"){
+        if(type == "bpal"){
             this.width = parseInt(content[1]);
             this.height = parseInt(content[2]);
             this.colorCount = parseInt(content[3]);
@@ -14,49 +16,66 @@ class ImageReader {
             }
 
             this.palette = content.slice(4, 4 + this.colorCount);
-            this.dataStr = content[4 + this.colorCount];
-        }
-    }
-
-    toBitmap() {
-
-        if(this.dataStr === undefined){
-            throw new OSError("Failed to parse image data")
+            this.data = content[4 + this.colorCount];
         }
 
-        const flatPixels = this.dataStr.split(" ");
+        if(type == "bmap"){
+            this.width = parseInt(content[1]);
+            this.height = parseInt(content[2]);
 
-        if (flatPixels.length !== this.width * this.height) {
-            throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
-        }
-
-        try {
-            const image = [];
-            for (let y = 0; y < this.height; y++) {
-                const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
-
-                for(let x = 0; x < row.length; x++){
-
-                    if(this.palette[parseInt(row[x], 36)] === undefined){
-                        throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
-                    }
-
-                    if(row[x] === "#") row[x] = "transparent";
-                    else row[x] = "#"+this.palette[parseInt(row[x], 36)];
-                }
-
-                image.push(row);
-            }
-
-            return image;
-        } catch (e) {
-            if(e instanceof OSError) throw e;
-            else throw new OSError("Failed to parse image data");
+            this.data = content.slice(3);
         }
     }
 
     read(){
-        if(this.type === "pbm") return this.toBitmap();
+        if(this.data === undefined){
+            throw new OSError("Failed to parse image data")
+        }
+
+        switch(this.type){
+            case "bpal": {
+
+                const flatPixels = this.data.split(" ");
+
+                if (flatPixels.length !== this.width * this.height) {
+                    throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
+                }
+
+                try {
+                    const image = [];
+                    for (let y = 0; y < this.height; y++) {
+                        const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
+
+                        for(let x = 0; x < row.length; x++){
+
+                            if(this.palette[parseInt(row[x], 36)] === undefined){
+                                throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
+                            }
+
+                            if(row[x] === "#") row[x] = "transparent";
+                            else row[x] = "#"+this.palette[parseInt(row[x], 36)];
+                        }
+
+                        image.push(row);
+                    }
+
+                    return image;
+                } catch (e) {
+                    if(e instanceof OSError) throw e;
+                    else throw new OSError("Failed to parse image data");
+                }
+            } break;
+
+            case "bmap": {
+
+                return this.data.map(line => line.split(" ").map(hex => "#"+hex));
+
+            } break;
+
+            default: {
+                throw new OSError(`Unsupported image type: "${this.type}"`);
+            }
+        }
     }
 }
 
@@ -412,7 +431,9 @@ class FilesystemService {
         if (node.parent) {
             const fullPath = structuredClone(node.fullPath());
             DiagnosticService.record(`FilesystemService_remove ${path}`);
-            node.parent.children.delete(node.name);
+            node.parent.children.delete(
+                node instanceof OSFile ? `${node.name}.${node.type}` : node.name
+            );
             return fullPath;
         } else {
             throw new OSError(`Cannot remove root directory`);
@@ -441,6 +462,7 @@ class FilesystemService {
         if (!(node instanceof OSDirectory)) return null;
 
         // Extract name and type from the path segment (e.g. foo.txt → ["foo", "txt"])
+
         const [givenName, givenType] = rawPart.split(".");
 
         const children = node.children;
@@ -449,13 +471,11 @@ class FilesystemService {
         // === ASSUMPTION MODE: "none" ===
         //
         if (assumption === "none") {
-            if (!children.has(givenName)) return null;
-            const child = children.get(givenName);
+            const fullName = givenType ? `${givenName}.${givenType}` : givenName;
 
-            // exact file type required
-            if (child instanceof OSFile && child.type !== givenType) return null;
+            if (!children.has(fullName)) return null;
 
-            node = child;
+            node = children.get(fullName);
             continue;
         }
 
@@ -511,15 +531,15 @@ class FilesystemService {
         // resolve matches
         if (matches.length === 0) return null;
         if (matches.length > 1) {
-            throw new OSError(`Ambiguous path segment '${rawPart}'`);
+            console.log(matches)
+            throw new OSError(`Ambiguous path segment '${rawPart}' (${matches.map(x => x.fullName()).join(", ")})`);
         }
 
         node = matches[0];
     }
 
     DiagnosticService.record(
-        `FilesystemService_resolvePath ${path} -> ${
-            node instanceof OSDirectory ? "directory" : "file"
+        `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"
         }: ${node.name}${node instanceof OSFile ? `.${node.type}` : ""}`
     );
 
@@ -557,30 +577,40 @@ class FilesystemService {
 
     /**
      * 
-     * @param {string} name 
-     * @param {string} type 
+     * @param {string} identifier 
      * @param {string} parentPath 
      * @param {string[]} content 
      * @returns 
      */
-    static createFile(name, type, parentPath, content = []) {
+    static createFile(identifier, parentPath, content = []) {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
-        if (!this.validationRegex.test(name)) {
-            throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        // if (!this.validationRegex.test(name)) {
+        //     throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
+        // }
+
+        if(identifier.split(".").length != 2){
+            throw new OSError(`Invalid file identifier: "${identifier}". Must be in the format "name.type"`);
+        }
+
+        let [name, type] = identifier.split(".");
+
+        if(!this.validationRegex.test(name) || !this.validationRegex.test(type)){
+            throw new OSError(`Invalid file identifier: "${identifier}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
         }
 
         const parentDir = parentPath ? this.resolvePath(parentPath) : this.currentDirectory;
         if (!parentDir || !(parentDir instanceof OSDirectory)) return null;
 
-        const file = new OSFile(name, type, parentDir, content);
+        const file = new OSFile(identifier, parentDir, content);
 
-        if (parentDir.children.has(name)) {
-            throw new OSError(`A file or directory with the name "${name}" already exists in "${parentDir.name}".`);
+        if (parentDir.children.has(identifier)) {
+            throw new OSError(`A file "${identifier}" already exists in "${parentDir.name}".`);
         }
 
-        parentDir.children.set(name, file);
-        DiagnosticService.record(`FilesystemService_createFile ${name} -> ${parentDir.name}`);
+
+        parentDir.children.set(identifier, file);
+        DiagnosticService.record(`FilesystemService_createFile ${identifier} -> ${parentDir.name}`);
         return file;
     }
 
@@ -1171,7 +1201,9 @@ class OSFile {
     #content = [];
     #size = 0;
 
-    constructor(name, type, parent, content = []) {
+    constructor(identifier, parent, content = []) {
+        let [name, type] = identifier.split(".");
+
         this.name = name;
         this.type = type;
         this.parent = parent; // parent directory
@@ -1180,7 +1212,7 @@ class OSFile {
     }
 
     fullName() {
-        return `${this.name}.${ this.type}`;
+        return `${this.name}.${this.type}`;
     }
 
     fullPath() {
@@ -1215,23 +1247,27 @@ class OSFile {
 
         const total = this.#size;
 
+        function f(n){
+            return Number(n.toFixed(2)).toLocaleString("en-US")
+        }
+
         if (total < 1024) {
             // B → KB
-            return `${total} B`;
+            return `${f(total)} B`;
         }
         else if (total < 1024 * 1024) {
             const kb = total / 1024;
-            return `${kb.toFixed(2)} KB (${total} B)`;
+            return `${f(kb)} KB (${f(total)} B)`;
         }
         else if (total < 1024 * 1024 * 1024) {
             const kb = total / 1024;
             const mb = total / (1024 * 1024);
-            return `${mb.toFixed(2)} MB (${kb} KB)`;
+            return `${f(mb)} MB (${f(kb)} KB)`;
         }
         else {
             const mb = total / (1024 * 1024);
             const gb = total / (1024 * 1024 * 1024);
-            return `${gb.toFixed(2)} GB (${mb} MB)`;
+            return `${f(gb)} GB (${f(mb)} MB)`;
         }
     }
 }
@@ -1956,7 +1992,7 @@ function defineCommands(){
                         listRecursive(entry, nextPrefix, level + 1);
                     } else {
                         let line = entry.fullName();
-                        if(flags.size) line += ` (${entry.getSize(true)})`;
+                        if(flags.size) line += ` - ${entry.getSize(true)}`;
                         lines.push({ type: "line", content: line, loc: prefix + branch })
                     }
                 });
@@ -2028,9 +2064,13 @@ function defineCommands(){
         try {
             if(flags.raw) return outputRaw(file);
             
-            if(file.type === "pbm"){
-                const reader = new ImageReader("pbm", file.read());
+            if(file.type === "bpal"){
+                const reader = new ImageReader("bpal", file.read());
+                return [{ type: "pixel_matrix", content: reader.read() }];
+            }
 
+            if(file.type === "bmap"){
+                const reader = new ImageReader("bmap", file.read());
                 return [{ type: "pixel_matrix", content: reader.read() }];
             }
             
@@ -2295,25 +2335,25 @@ function createFilesystem(){
     FilesystemService.createDirectory("config", "/")
     FilesystemService.createDirectory("data", "/")
 
-    FilesystemService.createFile("welcome", "txt", "/", [
+    FilesystemService.createFile("welcome.txt", "/", [
         "Hello there!",
         "This is a test file.",
     ])
 
     FilesystemService.createDirectory("palettes", "/data")
 
-    FilesystemService.createFile("user", "conf", "/config",
+    FilesystemService.createFile("user.conf", "/config",
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
             color_palette = "default"
             default_list_recursive_spacing = 2
-            pixel_size = 12
+            pixel_size = 2
             `, 12
         ).split("\n")
     );
 
-    FilesystemService.createFile("editor_styling", "conf", "/data",
+    FilesystemService.createFile("editor_styling.conf", "/data",
         normalizeIndentation(
             `
             txt = {
@@ -2328,10 +2368,20 @@ function createFilesystem(){
         ).split("\n")
     );
 
+    FilesystemService.createFile("filetypes.txt", "/documents", [
+        "txt - Plain text file",
+        "conf - json-like config file",
+        "bpal - custom image format used for storing pixel art images, especially spritesheets. Stands for \"Bitmap PALette\". Each line represents a row of pixels, and each value in the line corresponds to a color index in the palette file.",
+        "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color"
+    ]); 
 
-    FilesystemService.createFile("test", "pbm", "/documents/images", ["pbm","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
+    FilesystemService.createFile("test.bmap", "/documents/images", IMAGES.test);
 
-    FilesystemService.createFile("default", "conf", "/data/palettes", 
+    FilesystemService.createFile("stabby.bmap", "/documents/images", IMAGES.stabby)
+
+    FilesystemService.createFile("test.bpal", "/documents/images", ["bpal","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
+
+    FilesystemService.createFile("default.conf", "/data/palettes", 
         normalizeIndentation(
             `
             terminal_background = "#000000"
@@ -2907,38 +2957,86 @@ class OS {
         return line;
     }
 
-    pixelMatrix(content){
-        const pixel = "██";
-
+    pixelMatrix(content) {
         const pixelSize = ConfigService.get("pixel_size") || 12;
 
-        for(let i = 0; i < content.length; i++){
-            const contentLine = content[i];
-
-            const line = document.createElement('div');
-            const contentElem = document.createElement('div');
-            const locElem = document.createElement('span');
-
-            locElem.textContent = "";
-
-            line.style.fontSize = pixelSize + "px";
-            line.style.lineHeight = pixelSize + "px";
-            line.style.height = pixelSize + "px";
-            line.style.marginBottom = "0px";
-
-            for(let j = 0; j < contentLine.length; j++){
-
-                const color = contentLine[j];
-                contentElem.innerHTML += `<span style="color: transparent; background-color: ${color}">${pixel}</span>`;
-            }
-
-            line.classList.add('line');
-            line.appendChild(locElem);
-            line.appendChild(contentElem);
-            this.elem.appendChild(line);
-
+        // Create or reuse canvas
+        let canvas = this.elem.querySelector("canvas");
+        if (!canvas) {
+            canvas = document.createElement("canvas");
+            this.elem.appendChild(canvas);
         }
+
+        const width = content[0]?.length || 0;
+        const height = content.length;
+
+        canvas.width = width * pixelSize;
+        canvas.height = height * pixelSize;
+
+        const ctx = canvas.getContext("2d");
+
+        const renderStart = performance.now();
+        const template = ConfigService.get("timestamp_template");
+        DiagnosticService.record(`OS_pixelMatrix start ${this.timestamp(template)}`);
+
+        // Draw each pixel
+        for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+                const color = content[y][x];
+                ctx.fillStyle = color;
+                ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
+            }
+        }
+
+        const renderEnd = performance.now() - renderStart;
+        DiagnosticService.record(`OS_pixelMatrix end   ${this.timestamp(template)} renderTime=${renderEnd}ms`);
     }
+
+    // pixelMatrix(content) {
+    //     const pixel = "██";
+    //     const pixelSize = ConfigService.get("pixel_size") || 12;
+
+    //     const frag = document.createDocumentFragment(); // buffer
+
+    //     const renderStart = performance.now();
+    //     const template = ConfigService.get("timestamp_template");
+    //     DiagnosticService.record(`OS_pixelMatrix_start ${this.timestamp(template)}`);
+
+    //     for (let i = 0; i < content.length; i++) {
+    //         const contentLine = content[i];
+
+    //         const line = document.createElement("div");
+    //         line.classList.add("line");
+    //         line.style.fontSize = pixelSize + "px";
+    //         line.style.lineHeight = pixelSize + "px";
+    //         line.style.height = pixelSize + "px";
+    //         line.style.marginBottom = "0px";
+
+    //         const locElem = document.createElement("span");
+    //         locElem.textContent = "";
+
+    //         const contentElem = document.createElement("div");
+
+    //         // Build row HTML in memory (NOT DOM)
+    //         let rowHTML = "";
+    //         for (let j = 0; j < contentLine.length; j++) {
+    //             const color = contentLine[j];
+    //             rowHTML += `<span style="color: transparent; background-color: ${color}">${pixel}</span>`;
+    //         }
+
+    //         contentElem.innerHTML = rowHTML; // one update
+
+    //         line.appendChild(locElem);
+    //         line.appendChild(contentElem);
+
+    //         frag.appendChild(line);
+    //     }
+
+    //     const renderEnd = performance.now() - renderStart;
+    //     DiagnosticService.record(`OS_pixelMatrix_end ${this.timestamp(template)} renderTime=${renderEnd}ms`);
+
+    //     this.elem.appendChild(frag); // single DOM injection
+    // }
 
     savior(content){
         const line = document.createElement('div');
