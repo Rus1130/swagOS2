@@ -1,6 +1,8 @@
 import IMAGES from "./longfiles.js";
 
 class ImageReader {
+    static imgOffsetAmount = 200;
+
     constructor(type, content) {
 
         this.type = type;
@@ -25,9 +27,81 @@ class ImageReader {
 
             this.data = content.slice(3);
         }
+
+        if(type == "img"){
+
+            if(content.length < 2){
+                throw new OSError("Invalid img file format: missing width and pixel data");
+            }
+
+            if(isNaN(parseInt(content[1]))){
+                throw new OSError("Invalid img file format: width must be an integer");
+            }
+
+            this.data = content[0].split("");
+            this.width = content[1];
+        }
     }
 
-    read(){
+    hex2DArrayToBytes(hex2DArray) {
+        const flat = hex2DArray.flat();
+        const bytes = [];
+
+        for (const hex of flat) {
+            // Convert "#RRGGBB" to 3 bytes
+            const r = parseInt(hex.slice(1,3), 16);
+            const g = parseInt(hex.slice(3,5), 16);
+            const b = parseInt(hex.slice(5,7), 16);
+            bytes.push(r, g, b);
+        }
+
+        return new Uint8Array(bytes);
+    }
+
+    deflate(bytes) {
+        return pako.deflate(bytes);
+    }
+
+    enflate(bytes) {
+        return pako.inflate(bytes);
+    }
+
+    encodeImage(hex2DArray) {
+        const bytes = this.hex2DArrayToBytes(hex2DArray);
+        return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+ImageReader.imgOffsetAmount));
+    }
+
+    decodeImage(deflatedBytes) {
+        const bytes = Array.from(this.enflate(
+            new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
+        ));
+
+        const totalPixels = bytes.length / 3;
+        if(totalPixels % this.width !== 0){
+            console.warn("Width does not evenly divide the total pixels. Using computed height.");
+        }
+
+        const computedHeight = Math.ceil(totalPixels / this.width);
+
+        const result = [];
+        for(let y = 0; y < computedHeight; y++){
+            const row = [];
+            for(let x = 0; x < this.width; x++){
+                const idx = (y * this.width + x) * 3;
+                if(idx + 2 >= bytes.length) break; // safety
+                const r = bytes[idx];
+                const g = bytes[idx + 1];
+                const b = bytes[idx + 2];
+                row.push(`#${r.toString(16).padStart(2,"0")}${g.toString(16).padStart(2,"0")}${b.toString(16).padStart(2,"0")}`);
+            }
+            result.push(row);
+        }
+
+        return result;
+    }
+
+
+    read(hashtag = true){
         if(this.data === undefined){
             throw new OSError("Failed to parse image data")
         }
@@ -53,7 +127,7 @@ class ImageReader {
                             }
 
                             if(row[x] === "#") row[x] = "transparent";
-                            else row[x] = "#"+this.palette[parseInt(row[x], 36)];
+                            else row[x] = (hashtag ? "#" : "")+this.palette[parseInt(row[x], 36)];
                         }
 
                         image.push(row);
@@ -68,8 +142,17 @@ class ImageReader {
 
             case "bmap": {
 
-                return this.data.map(line => line.split(" ").map(hex => "#"+hex));
+                return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
 
+            } break;
+
+            case "img": {
+                try {
+                    return this.decodeImage(this.data);
+                } catch (e) {
+                    if(e instanceof OSError) throw e;
+                    else throw new OSError("Failed to parse image data");
+                }
             } break;
 
             default: {
@@ -531,7 +614,6 @@ class FilesystemService {
         // resolve matches
         if (matches.length === 0) return null;
         if (matches.length > 1) {
-            console.log(matches)
             throw new OSError(`Ambiguous path segment '${rawPart}' (${matches.map(x => x.fullName()).join(", ")})`);
         }
 
@@ -584,6 +666,12 @@ class FilesystemService {
      */
     static createFile(identifier, parentPath, content = []) {
         if (!this.enabled) throw new OSError("FilesystemService is disabled");
+
+        if(typeof identifier !== "string") throw new OSError(`File identifier must be a string, got ${typeof identifier}`);
+
+        if(typeof parentPath !== "string") throw new OSError(`Parent path must be a string, got ${typeof parentPath}`);
+
+        if(!Array.isArray(content)) throw new OSError(`File content must be an array of strings, got ${typeof content}`);
 
         // if (!this.validationRegex.test(name)) {
         //     throw new OSError(`Invalid file name: "${name}". Only alphanumeric characters, underscores, hyphens, and periods are allowed.`);
@@ -2051,7 +2139,7 @@ function defineCommands(){
         const path = args[0];
 
         const file = FilesystemService.resolvePath(path, "full");
-        if(!(file instanceof OSFile)) throw new OSError(`"${path}" is not a file`);
+        if(!(file instanceof OSFile)) throw new OSError(`file "${path}" could not be found`);
 
         function outputRaw(file) {
             const lines = [{ type: "line", content: `--- ${flags.raw ? "Raw " : ""}Contents of "${file.fullName()}" ---`, loc: "" }];
@@ -2063,14 +2151,9 @@ function defineCommands(){
 
         try {
             if(flags.raw) return outputRaw(file);
-            
-            if(file.type === "bpal"){
-                const reader = new ImageReader("bpal", file.read());
-                return [{ type: "pixel_matrix", content: reader.read() }];
-            }
 
-            if(file.type === "bmap"){
-                const reader = new ImageReader("bmap", file.read());
+            if(["bpal", "bmap", "img"].includes(file.type)){
+                const reader = new ImageReader(file.type, file.read());
                 return [{ type: "pixel_matrix", content: reader.read() }];
             }
             
@@ -2332,6 +2415,7 @@ function createFilesystem(){
     DiagnosticService.disable();
     FilesystemService.createDirectory("documents", "/")
     FilesystemService.createDirectory("images", "/documents")
+    FilesystemService.createDirectory("test", "/documents/images")
     FilesystemService.createDirectory("config", "/")
     FilesystemService.createDirectory("data", "/")
 
@@ -2348,7 +2432,7 @@ function createFilesystem(){
             timestamp_template = "d/mn/Y h:m:s.l"
             color_palette = "default"
             default_list_recursive_spacing = 2
-            pixel_size = 2
+            pixel_size = 1
             `, 12
         ).split("\n")
     );
@@ -2373,13 +2457,15 @@ function createFilesystem(){
         "conf - json-like config file",
         "bpal - custom image format used for storing pixel art images, especially spritesheets. Stands for \"Bitmap PALette\". Each line represents a row of pixels, and each value in the line corresponds to a color index in the palette file.",
         "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color"
-    ]); 
+    ]);
 
-    FilesystemService.createFile("test.bmap", "/documents/images", IMAGES.test);
+    FilesystemService.createFile("stabby.bmap", "/documents/images/test", IMAGES.stabby);
 
-    FilesystemService.createFile("stabby.bmap", "/documents/images", IMAGES.stabby)
+    FilesystemService.createFile("stabby.img", "/documents/images/test", IMAGES.stabbyimg)
 
-    FilesystemService.createFile("test.bpal", "/documents/images", ["bpal","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
+    FilesystemService.createFile("pillar.img", "/documents/images/test", IMAGES.pillar)
+
+    FilesystemService.createFile("guy.bpal", "/documents/images/test", ["bpal","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
 
     FilesystemService.createFile("default.conf", "/data/palettes", 
         normalizeIndentation(
@@ -3208,7 +3294,6 @@ class OS {
 
         return out;
     }
-
 
     openEditor(file){
         const styles = FilesystemService.resolvePath(`/data/editor_styling.conf`, "full");

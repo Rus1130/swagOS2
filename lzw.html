@@ -1,0 +1,106 @@
+<script>
+// Pure numeric LZW encoder/decoder for 2D hex arrays
+
+// Map colors to numeric IDs
+function mapColorsToIDs(hex2DArray) {
+    const flat = hex2DArray.flat();
+    const palette = [...new Set(flat)];
+    const colorToId = Object.fromEntries(palette.map((c, i) => [c, i]));
+    const idToColor = Object.fromEntries(palette.map((c, i) => [i, c]));
+    const numericArray = flat.map(c => colorToId[c]);
+    return { numericArray, palette, idToColor };
+}
+
+// LZW encode numeric array
+function lzwEncodeNumeric(arr) {
+    const dict = new Map();
+    let dictSize = 0;
+    
+    // Initialize dictionary with single numbers as arrays
+    for (const num of arr) {
+        const key = [num].toString();
+        if (!dict.has(key)) dict.set(key, dictSize++);
+    }
+
+    const result = [];
+    let w = [];
+
+    for (const k of arr) {
+        const wk = [...w, k];
+        const key = wk.toString();
+        if (dict.has(key)) {
+            w = wk;
+        } else {
+            result.push(dict.get(w.toString()));
+            dict.set(key, dictSize++);
+            w = [k];
+        }
+    }
+    if (w.length > 0) result.push(dict.get(w.toString()));
+    return { compressed: result, dict: Array.from(dict.keys()) };
+}
+
+// LZW decode numeric array
+function lzwDecodeNumeric(encoded) {
+    const { compressed, dict } = encoded;
+    const dictionary = dict.map(str => str.split(',').map(Number));
+
+    let w = dictionary[compressed[0]];
+    const result = [...w];
+
+    for (let i = 1; i < compressed.length; i++) {
+        const k = compressed[i];
+        let entry;
+        if (dictionary[k] !== undefined) {
+            entry = dictionary[k];
+        } else if (k === dictionary.length) {
+            entry = [...w, w[0]];
+        } else {
+            throw new Error("Bad compressed k: " + k);
+        }
+        result.push(...entry);
+        dictionary.push([...w, entry[0]]);
+        w = entry;
+    }
+
+    return result;
+}
+
+// Convert flat numeric array back to 2D hex array
+function numericArrayTo2D(arr, width, idToColor) {
+    const height = Math.ceil(arr.length / width);
+    const output = [];
+    for (let i = 0; i < height; i++) {
+        output.push(arr.slice(i * width, (i + 1) * width).map(id => idToColor[id]));
+    }
+    return output;
+}
+
+// Full encode
+function encodeImage(hex2DArray) {
+    const width = hex2DArray[0].length;
+    const { numericArray, idToColor } = mapColorsToIDs(hex2DArray);
+    const encoded = lzwEncodeNumeric(numericArray);
+    return { width, compressed: [width, ...encoded.compressed], dict: encoded.dict, idToColor };
+}
+
+// Full decode
+function decodeImage(encodedData) {
+    const width = encodedData.compressed[0];
+    const compressedData = { compressed: encodedData.compressed.slice(1), dict: encodedData.dict };
+    const numericArray = lzwDecodeNumeric(compressedData);
+    return numericArrayTo2D(numericArray, width, encodedData.idToColor);
+}
+
+// Example usage
+const hexArray = [
+    ["#ff0000", "#00ff00", "#0000ff"],
+    ["#ff0000", "#ff0000", "#00ff00"]
+];
+
+const encoded = encodeImage(hexArray);
+console.log("Encoded:", encoded.compressed);
+
+const decoded = decodeImage(encoded);
+console.log("Decoded:", decoded);
+</script>
