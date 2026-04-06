@@ -839,8 +839,10 @@ class OutputService {
             else if(line.type === "severe_error") this.os.severe(line.content);
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
-            else if(line.type === "pixel_matrix") this.os.pixelMatrix(line.content);
-            else {
+            else if(line.type === "pixel_matrix") {
+                if(line.legacy) this.os.pixelMatrixLegacy(line.content);
+                else this.os.pixelMatrix(line.content);
+            } else {
                 console.error(`OutputService: Unknown line type: ${line.type}`, line);
                 throw new OSError(`OutputService: Unknown line type: ${line.type}`);
             }
@@ -2132,6 +2134,14 @@ function defineCommands(){
                 description: "Outputs raw file content",
                 required: false,
                 datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "legacy",
+                short: "l",
+                description: "Use legacy rendering for images. Slower, but can support larger pixel sizes.",
+                required: false,
+                datatype: "boolean",
             }
         ]
     }, ({args, pipe, flags}, os, signal) => {
@@ -2153,7 +2163,7 @@ function defineCommands(){
 
             if(["bpal", "bmap", "img"].includes(file.type)){
                 const reader = new ImageReader(file.type, file.read());
-                return [{ type: "pixel_matrix", content: reader.read() }];
+                return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy }];
             }
             
             return outputRaw(file);
@@ -2398,7 +2408,6 @@ function defineCommands(){
     }, ({args, flags}, os, signal) => {
         const option = args[0];
     });
-    
 
     CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "bgtask"]);
 }

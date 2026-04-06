@@ -2,7 +2,7 @@
 
 
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
-<script>
+<script type="module">
 
     // test - https://www.pixilart.com/art/windows-xp-sr5z78d21d9e58aws3
     // 300x180
@@ -10,242 +10,241 @@
     // test2 - https://www.pixilart.com/art/anomaly-sr5z08db741fc6aws3
 
 
-const bitmap = []
+    const bitmap = []
 
-class ImageReader {
-    static imgOffsetAmount = 200;
+    class ImageReader {
+        static imgOffsetAmount = 200;
 
-    constructor(type, content) {
+        constructor(type, content) {
 
-        this.type = type;
-        this.raw = content;
+            this.type = type;
+            this.raw = content;
 
-        if(type == "bpal"){
-            this.width = parseInt(content[1]);
-            this.height = parseInt(content[2]);
-            this.colorCount = parseInt(content[3]);
+            if(type == "bpal"){
+                this.width = parseInt(content[1]);
+                this.height = parseInt(content[2]);
+                this.colorCount = parseInt(content[3]);
 
-            if(this.colorCount > 36){
-                throw new OSError("Color count exceeds maximum of 36");
-            }
-
-            this.palette = content.slice(4, 4 + this.colorCount);
-            this.data = content[4 + this.colorCount];
-        }
-
-        if(type == "bmap"){
-            this.width = parseInt(content[1]);
-            this.height = parseInt(content[2]);
-
-            this.data = content.slice(3);
-        }
-
-        if(type == "img"){
-
-            if(content.length < 2){
-                throw new OSError("Invalid img file format: missing width and/or pixel data");
-            }
-
-            if(isNaN(parseInt(content[1]))){
-                throw new OSError("Invalid img file format: width must be an integer");
-            }
-
-            this.data = content[0].split("");
-            this.width = content[1];
-        }
-    }
-
-    static hex2DArrayToBytes(hex2DArray) {
-        const flat = hex2DArray.flat();
-        const bytes = [];
-
-        for (const hex of flat) {
-            const h = hex.startsWith("#") ? hex.slice(1) : hex;
-            const r = parseInt(h.slice(0, 2), 16);
-            const g = parseInt(h.slice(2, 4), 16);
-            const b = parseInt(h.slice(4, 6), 16);
-            bytes.push(r, g, b);
-        }
-
-        return new Uint8Array(bytes);
-    }
-
-    static deflate(bytes) {
-        return pako.deflate(bytes);
-    }
-
-    static enflate(bytes) {
-        return pako.inflate(bytes);
-    }
-
-    static encodeImage(hex2DArray) {
-        const bytes = this.hex2DArrayToBytes(hex2DArray);
-        return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+this.imgOffsetAmount));
-    }
-
-    decodeImage(deflatedBytes) {
-        const bytes = Array.from(ImageReader.enflate(
-            new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
-        ));
-
-        const totalPixels = bytes.length / 3;
-        if(totalPixels % this.width !== 0){
-            console.warn("Width does not evenly divide the total pixels. Using computed height.");
-        }
-
-        const computedHeight = Math.ceil(totalPixels / this.width);
-
-        const result = [];
-        for(let y = 0; y < computedHeight; y++){
-            const row = [];
-            for(let x = 0; x < this.width; x++){
-                const idx = (y * this.width + x) * 3;
-                if(idx + 2 >= bytes.length) break; // safety
-                const r = bytes[idx];
-                const g = bytes[idx + 1];
-                const b = bytes[idx + 2];
-                row.push(`#${r.toString(16).padStart(2,"0")}${g.toString(16).padStart(2,"0")}${b.toString(16).padStart(2,"0")}`);
-            }
-            result.push(row);
-        }
-
-        return result;
-    }
-
-
-    read(hashtag = true){
-        if(this.data === undefined){
-            throw new OSError("Failed to parse image data")
-        }
-
-        switch(this.type){
-            case "bpal": {
-
-                const flatPixels = this.data.split(" ");
-
-                if (flatPixels.length !== this.width * this.height) {
-                    throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
+                if(this.colorCount > 36){
+                    throw new OSError("Color count exceeds maximum of 36");
                 }
 
-                try {
-                    const image = [];
-                    for (let y = 0; y < this.height; y++) {
-                        const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
+                this.palette = content.slice(4, 4 + this.colorCount);
+                this.data = content[4 + this.colorCount];
+            }
 
-                        for(let x = 0; x < row.length; x++){
+            if(type == "bmap"){
+                this.width = parseInt(content[1]);
+                this.height = parseInt(content[2]);
 
-                            if(this.palette[parseInt(row[x], 36)] === undefined){
-                                throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
-                            }
+                this.data = content.slice(3);
+            }
 
-                            if(row[x] === "#") row[x] = "transparent";
-                            else row[x] = (hashtag ? "#" : "")+this.palette[parseInt(row[x], 36)];
-                        }
+            if(type == "img"){
 
-                        image.push(row);
+                if(content.length < 2){
+                    throw new OSError("Invalid img file format: missing width and/or pixel data");
+                }
+
+                if(isNaN(parseInt(content[1]))){
+                    throw new OSError("Invalid img file format: width must be an integer");
+                }
+
+                this.data = content[0].split("");
+                this.width = content[1];
+            }
+        }
+
+        static hex2DArrayToBytes(hex2DArray) {
+            const flat = hex2DArray.flat();
+            const bytes = [];
+
+            for (const hex of flat) {
+                const h = hex.startsWith("#") ? hex.slice(1) : hex;
+                const r = parseInt(h.slice(0, 2), 16);
+                const g = parseInt(h.slice(2, 4), 16);
+                const b = parseInt(h.slice(4, 6), 16);
+                bytes.push(r, g, b);
+            }
+
+            return new Uint8Array(bytes);
+        }
+
+        static deflate(bytes) {
+            return pako.deflate(bytes);
+        }
+
+        static enflate(bytes) {
+            return pako.inflate(bytes);
+        }
+
+        static encodeImage(hex2DArray) {
+            const bytes = this.hex2DArrayToBytes(hex2DArray);
+            return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+this.imgOffsetAmount));
+        }
+
+        decodeImage(deflatedBytes) {
+            const bytes = Array.from(ImageReader.enflate(
+                new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
+            ));
+
+            const totalPixels = bytes.length / 3;
+            if(totalPixels % this.width !== 0){
+                console.warn("Width does not evenly divide the total pixels. Using computed height.");
+            }
+
+            const computedHeight = Math.ceil(totalPixels / this.width);
+
+            const result = [];
+            for(let y = 0; y < computedHeight; y++){
+                const row = [];
+                for(let x = 0; x < this.width; x++){
+                    const idx = (y * this.width + x) * 3;
+                    if(idx + 2 >= bytes.length) break; // safety
+                    const r = bytes[idx];
+                    const g = bytes[idx + 1];
+                    const b = bytes[idx + 2];
+                    row.push(`#${r.toString(16).padStart(2,"0")}${g.toString(16).padStart(2,"0")}${b.toString(16).padStart(2,"0")}`);
+                }
+                result.push(row);
+            }
+
+            return result;
+        }
+
+
+        read(hashtag = true){
+            if(this.data === undefined){
+                throw new OSError("Failed to parse image data")
+            }
+
+            switch(this.type){
+                case "bpal": {
+
+                    const flatPixels = this.data.split(" ");
+
+                    if (flatPixels.length !== this.width * this.height) {
+                        throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
                     }
 
-                    return image;
-                } catch (e) {
-                    if(e instanceof OSError) throw e;
-                    else throw new OSError("Failed to parse image data");
+                    try {
+                        const image = [];
+                        for (let y = 0; y < this.height; y++) {
+                            const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
+
+                            for(let x = 0; x < row.length; x++){
+
+                                if(this.palette[parseInt(row[x], 36)] === undefined){
+                                    throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
+                                }
+
+                                if(row[x] === "#") row[x] = "transparent";
+                                else row[x] = (hashtag ? "#" : "")+this.palette[parseInt(row[x], 36)];
+                            }
+
+                            image.push(row);
+                        }
+
+                        return image;
+                    } catch (e) {
+                        if(e instanceof OSError) throw e;
+                        else throw new OSError("Failed to parse image data");
+                    }
+                } break;
+
+                case "bmap": {
+
+                    return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
+
+                } break;
+
+                case "img": {
+                    return ImageReader.decodeImage(this.data);
+                } break;
+
+                default: {
+                    throw new OSError(`Unsupported image type: "${this.type}"`);
                 }
-            } break;
-
-            case "bmap": {
-
-                return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
-
-            } break;
-
-            case "img": {
-                return ImageReader.decodeImage(this.data);
-            } break;
-
-            default: {
-                throw new OSError(`Unsupported image type: "${this.type}"`);
             }
         }
     }
-}
 
 
 
-async function scanPixels(imgSrc, width, height) {
-    const img = new Image();
-    img.src = imgSrc;
-    await img.decode();
+    async function scanPixels(imgSrc, width, height) {
+        const img = new Image();
+        img.src = imgSrc;
+        await img.decode();
 
-    const canvas = document.getElementById("c");
-    const ctx = canvas.getContext("2d");
+        const canvas = document.getElementById("c");
+        const ctx = canvas.getContext("2d");
 
-    canvas.width = width;
-    canvas.height = height;
+        canvas.width = width;
+        canvas.height = height;
 
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(img, 0, 0, width, height);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, width, height);
 
-    // Grab the entire pixel buffer ONCE
-    const data = ctx.getImageData(0, 0, width, height).data;
+        // Grab the entire pixel buffer ONCE
+        const data = ctx.getImageData(0, 0, width, height).data;
 
-    // Loop through pixels
-    for (let y = 0; y < height; y++) {
+        // Loop through pixels
+        for (let y = 0; y < height; y++) {
 
-        let row = []
+            let row = []
 
-        for (let x = 0; x < width; x++) {
+            for (let x = 0; x < width; x++) {
 
-            const i = (y * width + x) * 4;
+                const i = (y * width + x) * 4;
 
-            const r = data[i];
-            const g = data[i + 1];
-            const b = data[i + 2];
-            const a = data[i + 3];
+                const r = data[i];
+                const g = data[i + 1];
+                const b = data[i + 2];
+                const a = data[i + 3];
 
-            // Do whatever you want with the pixel color
-            console.log(`(${x},${y}) → rgba(${r},${g},${b},${a})`);
+                // Do whatever you want with the pixel color
+                console.log(`(${x},${y}) → rgba(${r},${g},${b},${a})`);
 
-            // turn it into a hex number, no alpha
+                // turn it into a hex number, no alpha
 
-            let hex = (r << 16) | (g << 8) | b;
+                let hex = (r << 16) | (g << 8) | b;
 
-            // push it into the bitmap
+                // push it into the bitmap
 
-            row.push(hex.toString(16).padStart(6, "0"))
+                row.push(hex.toString(16).padStart(6, "0"))
+            }
+
+            bitmap.push(row.join(" "))
         }
-
-        bitmap.push(row.join(" "))
     }
-}
 
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        console.log("Copied to clipboard");
-    }).catch(err => {
-        console.error("Could not copy text: ", err);
-    });
-}
+    function copyToClipboard(text) {
+        navigator.clipboard.writeText(text).then(() => {
+            console.log("Copied to clipboard");
+        }).catch(err => {
+            console.error("Could not copy text: ", err);
+        });
+    }
 
-const width = 312;
-const height = 438;
+    const width = 312;
+    const height = 438;
 
-scanPixels("pillar.png", width, height).then(() => {
-    console.log("bmap:")
-    const bmap = JSON.stringify(bitmap)
-    console.log(bmap);
-    console.log("---");
-    console.log("img:")
+    scanPixels("pillar.png", width, height).then(() => {
+        console.log("bmap:")
+        const bmap = JSON.stringify(bitmap)
+        console.log(bmap);
+        console.log("---");
+        console.log("img:")
 
+        console.log(bitmap)
 
-    const encoded = ImageReader.encodeImage(bitmap.map(row => row.split(" "))).join("")
-    console.log(JSON.stringify([encoded, width]))
-
-    // console.log(JSON.stringify(encoded));
+        const encoded = ImageReader.encodeImage(bitmap.map(row => row.split(" "))).join("")
+        console.log(JSON.stringify([encoded, width]))
 
 
-    
-    // const reader = new ImageReader("img", [encoded, width]);
-    // console.log(reader.decodeImage(encoded.split("")));
+        
+        const reader = new ImageReader("img", [encoded, width]);
+        console.log(reader.decodeImage(encoded.split("")));
 
-})
+    })
 </script>
