@@ -43,43 +43,40 @@ class ImageReader {
         }
     }
 
-    hex2DArrayToBytes(hex2DArray) {
+    static hex2DArrayToBytes(hex2DArray) {
         const flat = hex2DArray.flat();
         const bytes = [];
 
         for (const hex of flat) {
-            // Convert "#RRGGBB" to 3 bytes
-            const r = parseInt(hex.slice(1,3), 16);
-            const g = parseInt(hex.slice(3,5), 16);
-            const b = parseInt(hex.slice(5,7), 16);
+            const h = hex.startsWith("#") ? hex.slice(1) : hex;
+            const r = parseInt(h.slice(0, 2), 16);
+            const g = parseInt(h.slice(2, 4), 16);
+            const b = parseInt(h.slice(4, 6), 16);
             bytes.push(r, g, b);
         }
 
         return new Uint8Array(bytes);
     }
 
-    deflate(bytes) {
+    static deflate(bytes) {
         return pako.deflate(bytes);
     }
 
-    enflate(bytes) {
+    static enflate(bytes) {
         return pako.inflate(bytes);
     }
 
-    encodeImage(hex2DArray) {
+    static encodeImage(hex2DArray) {
         const bytes = this.hex2DArrayToBytes(hex2DArray);
-        return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+ImageReader.imgOffsetAmount));
+        return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+this.imgOffsetAmount));
     }
 
     decodeImage(deflatedBytes) {
-        const bytes = Array.from(this.enflate(
+        const bytes = Array.from(ImageReader.enflate(
             new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
         ));
 
         const totalPixels = bytes.length / 3;
-        if(totalPixels % this.width !== 0){
-            console.warn("Width does not evenly divide the total pixels. Using computed height.");
-        }
 
         const computedHeight = Math.ceil(totalPixels / this.width);
 
@@ -141,17 +138,18 @@ class ImageReader {
             } break;
 
             case "bmap": {
-
-                return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
-
+                try {
+                    return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
+                } catch (e) {
+                    throw new OSError("Failed to parse image data");
+                }
             } break;
 
             case "img": {
                 try {
                     return this.decodeImage(this.data);
                 } catch (e) {
-                    if(e instanceof OSError) throw e;
-                    else throw new OSError("Failed to parse image data");
+                    throw new OSError("Failed to decode image data");
                 }
             } break;
 
@@ -161,6 +159,7 @@ class ImageReader {
         }
     }
 }
+
 
 class ColorService {
     static enabled = false;
@@ -2459,10 +2458,12 @@ function createFilesystem(){
         "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color"
     ]);
 
+    // 330x400
     FilesystemService.createFile("stabby.bmap", "/documents/images/test", IMAGES.stabby);
 
     FilesystemService.createFile("stabby.img", "/documents/images/test", IMAGES.stabbyimg)
 
+    // 312x438
     FilesystemService.createFile("pillar.img", "/documents/images/test", IMAGES.pillar)
 
     FilesystemService.createFile("guy.bpal", "/documents/images/test", ["bpal","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
@@ -3047,11 +3048,7 @@ class OS {
         const pixelSize = ConfigService.get("pixel_size") || 12;
 
         // Create or reuse canvas
-        let canvas = this.elem.querySelector("canvas");
-        if (!canvas) {
-            canvas = document.createElement("canvas");
-            this.elem.appendChild(canvas);
-        }
+        let canvas = document.createElement("canvas");
 
         const width = content[0]?.length || 0;
         const height = content.length;
@@ -3074,55 +3071,80 @@ class OS {
             }
         }
 
+        let sadFaceDetected = false;
+        try {
+            const test = ctx.getImageData(0, 0, 1, 1).data;
+            if (test[3] === 0 && test[0] === 0 && test[1] === 0 && test[2] === 0) {
+                // top-left pixel should NEVER be fully transparent in your pixel art
+                sadFaceDetected = true;
+                this.error("Render failed: image width and height too large for current pixel size.");
+                return;
+            }
+        } catch (e) {
+            // getImageData can also fail when the canvas is broken
+            sadFaceDetected = true;
+            this.error("Render failed: image width and height too large for current pixel size.");
+            return;
+        }
+
+        if (sadFaceDetected) {
+            DiagnosticService.record("OS_pixelMatrix render_failed too_large");
+        }
+
         const renderEnd = performance.now() - renderStart;
         DiagnosticService.record(`OS_pixelMatrix end   ${this.timestamp(template)} renderTime=${renderEnd}ms`);
+
+        const line = document.createElement("div");
+        line.classList.add("line");
+        line.appendChild(canvas);
+        this.elem.appendChild(line);
     }
 
-    // pixelMatrix(content) {
-    //     const pixel = "██";
-    //     const pixelSize = ConfigService.get("pixel_size") || 12;
+    pixelMatrixLegacy(content) {
+        const pixel = "██";
+        const pixelSize = ConfigService.get("pixel_size") || 12;
 
-    //     const frag = document.createDocumentFragment(); // buffer
+        const frag = document.createDocumentFragment(); // buffer
 
-    //     const renderStart = performance.now();
-    //     const template = ConfigService.get("timestamp_template");
-    //     DiagnosticService.record(`OS_pixelMatrix_start ${this.timestamp(template)}`);
+        const renderStart = performance.now();
+        const template = ConfigService.get("timestamp_template");
+        DiagnosticService.record(`OS_pixelMatrix_start ${this.timestamp(template)}`);
 
-    //     for (let i = 0; i < content.length; i++) {
-    //         const contentLine = content[i];
+        for (let i = 0; i < content.length; i++) {
+            const contentLine = content[i];
 
-    //         const line = document.createElement("div");
-    //         line.classList.add("line");
-    //         line.style.fontSize = pixelSize + "px";
-    //         line.style.lineHeight = pixelSize + "px";
-    //         line.style.height = pixelSize + "px";
-    //         line.style.marginBottom = "0px";
+            const line = document.createElement("div");
+            line.classList.add("line");
+            line.style.fontSize = pixelSize + "px";
+            line.style.lineHeight = pixelSize + "px";
+            line.style.height = pixelSize + "px";
+            line.style.marginBottom = "0px";
 
-    //         const locElem = document.createElement("span");
-    //         locElem.textContent = "";
+            const locElem = document.createElement("span");
+            locElem.textContent = "";
 
-    //         const contentElem = document.createElement("div");
+            const contentElem = document.createElement("div");
 
-    //         // Build row HTML in memory (NOT DOM)
-    //         let rowHTML = "";
-    //         for (let j = 0; j < contentLine.length; j++) {
-    //             const color = contentLine[j];
-    //             rowHTML += `<span style="color: transparent; background-color: ${color}">${pixel}</span>`;
-    //         }
+            // Build row HTML in memory (NOT DOM)
+            let rowHTML = "";
+            for (let j = 0; j < contentLine.length; j++) {
+                const color = contentLine[j];
+                rowHTML += `<span style="color: transparent; background-color: ${color}">${pixel}</span>`;
+            }
 
-    //         contentElem.innerHTML = rowHTML; // one update
+            contentElem.innerHTML = rowHTML; // one update
 
-    //         line.appendChild(locElem);
-    //         line.appendChild(contentElem);
+            line.appendChild(locElem);
+            line.appendChild(contentElem);
 
-    //         frag.appendChild(line);
-    //     }
+            frag.appendChild(line);
+        }
 
-    //     const renderEnd = performance.now() - renderStart;
-    //     DiagnosticService.record(`OS_pixelMatrix_end ${this.timestamp(template)} renderTime=${renderEnd}ms`);
+        const renderEnd = performance.now() - renderStart;
+        DiagnosticService.record(`OS_pixelMatrix_end ${this.timestamp(template)} renderTime=${renderEnd}ms`);
 
-    //     this.elem.appendChild(frag); // single DOM injection
-    // }
+        this.elem.appendChild(frag); // single DOM injection
+    }
 
     savior(content){
         const line = document.createElement('div');
