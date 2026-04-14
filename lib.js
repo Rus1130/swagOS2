@@ -191,15 +191,78 @@ class ColorService {
             throw new OSError("Color palette is not defined in /config/user.conf");
         }
 
+        console.log(palette)
+
         const paletteFile = FilesystemService.resolvePath(`/data/palettes/${palette}.conf`, "file");
 
         if(!paletteFile) throw new OSError("Palette configuration file not found at /config/palette.conf");
 
         const paletteData = new SwagObjectParser(paletteFile.read()).parse();
 
-        for(const [key, value] of Object.entries(paletteData)){
-            document.documentElement.style.setProperty(`--${key}`, value);
+        if(paletteData.palette === undefined) throw new OSError("Palette configuration file is missing 'palette' property");
+        if(paletteData.definitions === undefined) throw new OSError("Palette configuration file is missing 'definitions' property");
+
+        this.palette = paletteData.palette;
+        this.definitions = paletteData.definitions;
+
+        for(const [key, value] of Object.entries(paletteData.palette)){
+            document.documentElement.style.setProperty(`--color_${key}`, value);
         }
+
+        for(const [key, value] of Object.entries(paletteData.definitions)){
+            if(value === "transparent") document.documentElement.style.setProperty(`--${key}`, "transparent");
+            else document.documentElement.style.setProperty(`--${key}`, `var(--color_${value})`);
+        }
+    }
+
+    static getPalette(){
+        if(!this.enabled) throw new OSError("ColorService is disabled");
+        DiagnosticService.record("ColorService_getPalette");
+        return structuredClone(this.palette);
+    }
+
+    static getColor(hexColor){
+        if(!this.enabled) throw new OSError("ColorService is disabled");
+        DiagnosticService.record("ColorService_getColor");
+
+        if(hexColor === "transparent") return "transparent";
+
+        const target = this.hexToRgb(hexColor);
+
+        let closestColor = null;
+        let closestDistance = Infinity;
+
+        const palette = Object.values(this.palette).map(c => this.hexToRgb(c));
+
+        for(const name in palette){
+            const rgb = palette[name];
+
+            const dr = rgb.r - target.r;
+            const dg = rgb.g - target.g;
+            const db = rgb.b - target.b;
+
+            const distance = dr*dr + dg*dg + db*db;
+
+            if(distance < closestDistance){
+                closestDistance = distance;
+                closestColor = name;
+            }
+        }
+
+        return this.rgbToHex(palette[closestColor]);
+    }
+
+    static hexToRgb(hex) {
+        const h = hex.startsWith("#") ? hex.slice(1) : hex;
+        return {
+            r: parseInt(h.slice(0, 2), 16),
+            g: parseInt(h.slice(2, 4), 16),
+            b: parseInt(h.slice(4, 6), 16)
+        };
+    }
+
+    static rgbToHex(object) {
+        return `#${object.r.toString(16).padStart(2,"0")}${object.g.toString(16).padStart(2,"0")}${object.b.toString(16).padStart(2,"0")}`;
     }
 }
 
@@ -2135,14 +2198,6 @@ function defineCommands(){
                 required: false,
                 datatype: "boolean",
             },
-            {
-                type: "flag",
-                name: "legacy",
-                short: "l",
-                description: "Use legacy rendering for images. Slower, but can support larger pixel sizes.",
-                required: false,
-                datatype: "boolean",
-            }
         ]
     }, ({args, pipe, flags}, os, signal) => {
         const path = args[0];
@@ -2160,11 +2215,6 @@ function defineCommands(){
 
         try {
             if(flags.raw) return outputRaw(file);
-
-            if(["bpal", "bmap", "img"].includes(file.type)){
-                const reader = new ImageReader(file.type, file.read());
-                return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy }];
-            }
             
             return outputRaw(file);
         } catch(e) {
@@ -2176,6 +2226,50 @@ function defineCommands(){
             }
         }
     });
+
+    CommandService.defineCommand("view", {
+        options: {
+            description: "View an image file",
+            alias: "v"
+        },
+        schema: [
+            {
+                type: "positional",
+                name: "file_path",
+                description: "The path of the file to read",
+                required: true,
+            },
+            {
+                type: "flag",
+                name: "legacy",
+                short: "l",
+                description: "Use legacy rendering for images. Slower, but can support larger pixel sizes.",
+                required: false,
+                datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "pixelsize",
+                short: "p",
+                description: "Set the pixel size",
+                required: false,
+                datatype: "number",
+                default: 1
+            }
+        ]
+    }, ({args, flags}, os, signal) => {
+        const path = args[0];
+
+        const file = FilesystemService.resolvePath(path, "full");
+        if(!(file instanceof OSFile)) throw new OSError(`file "${path}" could not be found`);
+
+        if(["bpal", "bmap", "img"].includes(file.type)){
+            const reader = new ImageReader(file.type, file.read());
+            return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy }];
+        } else {
+            return { type: "error", content: `Unsupported file type: "${file.type}".`, loc: "" };
+        }
+    })
 
     CommandService.defineCommand("time", {
         options: {
@@ -2409,7 +2503,7 @@ function defineCommands(){
         const option = args[0];
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "bgtask"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "bgtask", "view"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -2438,7 +2532,7 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
-            color_palette = "default"
+            color_palette = "vibrant_colors"
             default_list_recursive_spacing = 2
             pixel_size = 1
             `, 12
@@ -2480,39 +2574,131 @@ function createFilesystem(){
     FilesystemService.createFile("default.conf", "/data/palettes", 
         normalizeIndentation(
             `
-            terminal_background = "#000000"
+            palette = {
+                black = "#000000"
+                white = "#FFFFFF"
+                red = "#FF0000"
+                lime = "#00FF00"
+                blue = "#0000FF"
+                yellow = "#FFFF00"
+                cyan = "#00FFFF"
+                magenta = "#FF00FF"
+                silver = "#C0C0C0"
+                gray = "#808080"
+                dark_gray = "#5a5a5a"
+                dark_red = "#8B0000"
+                orange = "#FFA500"
+                green = "#008000"
+                purple = "#800080"
+                teal = "#008080"
+                navy = "#000080"
+                lime2 = "#90ee90"
+                red2 = "#ff5e5e"
+                light_purple = "#d862ff"
+                
+            }
 
-            loc_background = "#000000"
-            loc_color = "#FFFFFF"
+            definitions = {
+                terminal_background = "black"
 
-            line_background = "#000000"
-            line_color = "#FFFFFF"
+                loc_background = "black"
+                loc_color = "white"
 
-            error_background = "#FF0000"
-            error_color = "#FFFFFF"
+                line_background = "black"
+                line_color = "white"
 
-            severeError_background = "#8B0000"
-            severeError_color = "#FFFFFF"
+                error_background = "red"
+                error_color = "white"
 
-            savior_background = "#5a5a5a"
-            savior_color = "#FFFFFF"
+                severeError_background = "dark_red"
+                severeError_color = "white"
+
+                savior_background = "dark_gray"
+                savior_color = "white"
+
+                enabled_background = "transparent"
+                enabled_color = "lime2"
+
+                disabled_background = "transparent"
+                disabled_color = "red2"
+
+                highlight_background = "light_purple"
+                highlight_color = "white"
+
+                editor_background = "black"
+                editor_color = "white"
+
+                editor_loc_background = "black"
+                editor_loc_color = "white"
+            }
+            `, 12
+    ).split("\n"))
+
+    FilesystemService.createFile("vibrant_colors.conf", "/data/palettes", 
+    normalizeIndentation(
+        `
+        palette = {
+            black = "#000000"
+            white = "#FFFFFF"
+            red = "#FF0000"
+            lime = "#00FF00"
+            blue = "#0000FF"
+            yellow = "#FFFF00"
+            cyan = "#00FFFF"
+            magenta = "#FF00FF"
+            silver = "#C0C0C0"
+            gray = "#808080"
+            dark_gray = "#5a5a5a"
+            dark_red = "#8B0000"
+            orange = "#FFA500"
+            green = "#008000"
+            purple = "#800080"
+            teal = "#008080"
+            navy = "#000080"
+            lime2 = "#90ee90"
+            red2 = "#ff5e5e"
+            light_purple = "#d862ff"
+            white2 = "#fbfcfc"
+            cyan2 = "#93e5ec"
+            cyan3 = "#69cee4"
+            
+        }
+
+        definitions = {
+            terminal_background = "black"
+
+            loc_background = "black"
+            loc_color = "white"
+
+            line_background = "black"
+            line_color = "white"
+
+            error_background = "red"
+            error_color = "white"
+
+            severeError_background = "dark_red"
+            severeError_color = "white"
+
+            savior_background = "dark_gray"
+            savior_color = "white"
 
             enabled_background = "transparent"
-            enabled_color = "#90ee90"
+            enabled_color = "lime2"
 
             disabled_background = "transparent"
-            disabled_color = "#ff5e5e"
+            disabled_color = "red2"
 
-            highlight_background = "#d862ff"
-            highlight_color = "#FFFFFF"
+            highlight_background = "light_purple"
+            highlight_color = "white"
 
-            editor_background = "#000000"
-            editor_color = "#FFFFFF"
+            editor_background = "black"
+            editor_color = "white"
 
-            editor_loc_background = "#000000"
-            editor_loc_color = "#FFFFFF"
-            `, 12
-        ).split("\n"))
+            editor_loc_background = "black"
+            editor_loc_color = "white"
+        }
+        `, 12
+    ).split("\n"))
 
     DiagnosticService.enable();
 }
@@ -3071,14 +3257,31 @@ class OS {
         const template = ConfigService.get("timestamp_template");
         DiagnosticService.record(`OS_pixelMatrix start ${this.timestamp(template)}`);
 
+        const seenColors = new Map();
+        let differentColors = 0;
+        let totalPixels = width * height;
+
         // Draw each pixel
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const color = content[y][x];
-                ctx.fillStyle = color;
+                let closest = '';
+
+                if (seenColors.has(color)) {
+                    closest = seenColors.get(color);
+                } else {
+                    closest = ColorService.getColor(color);
+                    seenColors.set(color, closest);
+                }
+                if(color !== closest) differentColors++; 
+                ctx.fillStyle = closest;
                 ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
             }
         }
+
+        // get the % of pixels that had a different color than the palette's closest match
+        const colorDifference = (differentColors / totalPixels) * 100;
+        DiagnosticService.record(`OS_pixelMatrix color_difference ${colorDifference.toFixed(2)}% (${differentColors} out of ${totalPixels} pixels)`);
 
         let sadFaceDetected = false;
         try {
