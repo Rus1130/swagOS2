@@ -2532,7 +2532,7 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
-            color_palette = "vibrant_colors"
+            color_palette = "vibrant"
             default_list_recursive_spacing = 2
             pixel_size = 1
             `, 12
@@ -2634,34 +2634,76 @@ function createFilesystem(){
             `, 12
     ).split("\n"))
 
-    FilesystemService.createFile("vibrant_colors.conf", "/data/palettes", 
+
+    // https://lospec.com/palette-list/endesga-64
+    FilesystemService.createFile("vibrant.conf", "/data/palettes", 
     normalizeIndentation(
         `
         palette = {
-            black = "#000000"
-            white = "#FFFFFF"
-            red = "#FF0000"
-            lime = "#00FF00"
-            blue = "#0000FF"
-            yellow = "#FFFF00"
-            cyan = "#00FFFF"
-            magenta = "#FF00FF"
-            silver = "#C0C0C0"
-            gray = "#808080"
-            dark_gray = "#5a5a5a"
-            dark_red = "#8B0000"
-            orange = "#FFA500"
-            green = "#008000"
-            purple = "#800080"
-            teal = "#008080"
-            navy = "#000080"
-            lime2 = "#90ee90"
-            red2 = "#ff5e5e"
-            light_purple = "#d862ff"
-            white2 = "#fbfcfc"
-            cyan2 = "#93e5ec"
-            cyan3 = "#69cee4"
-            
+            black = "#131313"
+            darkgrey1 = "#1b1b1b"
+            darkgrey2 = "#272727"
+            grey = "#3d3d3d"
+            lightgrey1 = "#5d5d5d"
+            lightgrey2 = "#858585"
+            silver = "#b4b4b4"
+            white = "#ffffff"
+            bluegrey1 = "#c7cfdd"
+            bluegrey2 = "#92a1b9"
+            bluesteel = "#657392"
+            slate1 = "#424c6e"
+            navy1 = "#2a2f4e"
+            navy2 = "#1a1932"
+            navy3 = "#0e071b"
+            deepnavy = "#1c121c"
+            brown1 = "#391f21"
+            brown2 = "#5d2c28"
+            brown3 = "#8a4836"
+            brown4 = "#bf6f4a"
+            lightbrown1 = "#e69c69"
+            lightbrown2 = "#f6ca9f"
+            tan = "#f9e6cf"
+            gold = "#edab50"
+            orange1 = "#e07438"
+            redorange = "#c64524"
+            deepred = "#8e251d"
+            darkorange = "#ff5000"
+            orange2 = "#ed7614"
+            orangeyellow = "#ffa214"
+            yellow = "#ffc825"
+            paleyellow = "#ffeb57"
+            palegreen = "#d3fc7e"
+            green1 = "#99e65f"
+            green2 = "#5ac54f"
+            green3 = "#33984b"
+            darkgreen = "#1e6f50"
+            teal = "#134c4c"
+            darkblue1 = "#0c2e44"
+            darkblue2 = "#00396d"
+            blue = "#0069aa"
+            lightblue1 = "#0098dc"
+            lightblue2 = "#00cdf9"
+            lightblue3 = "#0cf1ff"
+            cyan = "#94fdff"
+            lightpink = "#fdd2ed"
+            pink1 = "#f389f5"
+            pink2 = "#db3ffd"
+            purple = "#7a09fa"
+            deepblue = "#3003d9"
+            darkblue3 = "#0c0293"
+            darkblue4 = "#03193f"
+            darkpurple1 = "#3b1443"
+            darkpurple2 = "#622461"
+            magenta1 = "#93388f"
+            magenta2 = "#ca52c9"
+            rose1 = "#c85086"
+            rose2 = "#f68187"
+            red1 = "#f5555d"
+            red2 = "#ff0040"
+            red3 = "#ea323c"
+            red4 = "#c42430"
+            red5 = "#891e2b"
+            darkred = "#571c27"
         }
 
         definitions = {
@@ -2679,16 +2721,16 @@ function createFilesystem(){
             severeError_background = "dark_red"
             severeError_color = "white"
 
-            savior_background = "dark_gray"
+            savior_background = "grey"
             savior_color = "white"
 
             enabled_background = "transparent"
-            enabled_color = "lime2"
+            enabled_color = "green2"
 
             disabled_background = "transparent"
             disabled_color = "red2"
 
-            highlight_background = "light_purple"
+            highlight_background = "magenta2"
             highlight_color = "white"
 
             editor_background = "black"
