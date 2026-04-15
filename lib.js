@@ -191,8 +191,6 @@ class ColorService {
             throw new OSError("Color palette is not defined in /config/user.conf");
         }
 
-        console.log(palette)
-
         const paletteFile = FilesystemService.resolvePath(`/data/palettes/${palette}.conf`, "file");
 
         if(!paletteFile) throw new OSError("Palette configuration file not found at /config/palette.conf");
@@ -536,7 +534,7 @@ class CommandService {
             }
         }
 
-        return { valid: true, error: null, flags };
+        return verificationReturn;
     }
 }
 
@@ -886,6 +884,7 @@ class OutputService {
     static add(line) {
         if(!this.enabled) return;
         DiagnosticService.record("OutputService_add");
+        console.log(this.buffer)
         this.buffer.push(line);
     }
 
@@ -903,8 +902,8 @@ class OutputService {
             else if(line.type === "savior") this.os.savior(line.content);
             else if(line.type === "html") this.os.htmlLine(line.content, line.loc);
             else if(line.type === "pixel_matrix") {
-                if(line.legacy) this.os.pixelMatrixLegacy(line.content);
-                else this.os.pixelMatrix(line.content);
+                if(line.legacy) this.os.pixelMatrixLegacy(line.content, line.pixelSize);
+                else this.os.pixelMatrix(line.content, line.pixelSize);
             } else {
                 console.error(`OutputService: Unknown line type: ${line.type}`, line);
                 throw new OSError(`OutputService: Unknown line type: ${line.type}`);
@@ -1224,6 +1223,19 @@ class SwagObjectParser {
         return this.parseBlock(true);
     }
 
+    objectToString(obj, indent = 0) {
+        const indentStr = "    ".repeat(indent);
+        for (const [key, value] of Object.entries(obj)) {
+            if (typeof value === "object" && !Array.isArray(value)) {
+                console.log(`${indentStr}${key} = {`);
+                this.objectToString(value, indent + 1);
+                console.log(`${indentStr}}`);
+            } else {
+                console.log(`${indentStr}${key} = ${JSON.stringify(value)}`);
+            }
+        }
+    }
+
     parseBlock(isTopLevel = false) {
         const obj = {};
 
@@ -1495,6 +1507,14 @@ function defineCommands(){
                 description: "Trace service logs.",
                 required: false,
                 datatype: "boolean",
+            },
+            {
+                type: "flag",
+                name: "lines",
+                short: "l",
+                description: "Last n lines to show of the log",
+                required: false,
+                datatype: "number",
             }
         ]
     }, (params, os, signal) => {
@@ -1563,11 +1583,13 @@ function defineCommands(){
                 }
             }
 
-            return compressed.map(x => {
+            const outputLines = compressed.map(x => {
                 const m = x.match(/^\[([^\]]*)\] (.*)$/s);
                 if (!m) return { type: "line", content: x, loc: "" };
                 return { type: "line", content: m[2], loc: "["+m[1]+"]" };
-            });
+            }).slice(-params.flags.lines || undefined);
+
+            return outputLines;
         } else if(action === "list"){
             const services = ServiceManager.services;
             const lines = [];
@@ -2114,6 +2136,7 @@ function defineCommands(){
             }
         ],
     }, ({args, flags}, os, signal) => {
+        console.log(flags.recursive)
         if(flags.recursive){
             const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
 
@@ -2255,7 +2278,7 @@ function defineCommands(){
                 required: false,
                 datatype: "number",
                 default: 1
-            }
+            },
         ]
     }, ({args, flags}, os, signal) => {
         const path = args[0];
@@ -2265,7 +2288,7 @@ function defineCommands(){
 
         if(["bpal", "bmap", "img"].includes(file.type)){
             const reader = new ImageReader(file.type, file.read());
-            return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy }];
+            return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy, pixelSize: flags.pixelsize }];
         } else {
             return { type: "error", content: `Unsupported file type: "${file.type}".`, loc: "" };
         }
@@ -2558,7 +2581,8 @@ function createFilesystem(){
         "txt - Plain text file",
         "conf - json-like config file",
         "bpal - custom image format used for storing pixel art images, especially spritesheets. Stands for \"Bitmap PALette\". Each line represents a row of pixels, and each value in the line corresponds to a color index in the palette file.",
-        "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color"
+        "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color",
+        "img - essentially a compressed bitmap"
     ]);
 
     // 330x400
@@ -2640,7 +2664,8 @@ function createFilesystem(){
     normalizeIndentation(
         `
         palette = {
-            black = "#131313"
+            black = "#000000"
+            black2 = "#131313"
             darkgrey1 = "#1b1b1b"
             darkgrey2 = "#272727"
             grey = "#3d3d3d"
@@ -3016,6 +3041,8 @@ class OS {
             throw new OSError(error);
         }
 
+        console.log(fragment, verification)
+
         fragment.flags = verification.flags;
 
         const entry = CommandService.commands.get(fragment.name);
@@ -3281,8 +3308,9 @@ class OS {
         return line;
     }
 
-    pixelMatrix(content) {
-        const pixelSize = ConfigService.get("pixel_size") || 12;
+    pixelMatrix(content, pixelSize = null){
+
+        pixelSize = pixelSize || ConfigService.get("pixel_size") || 1;
 
         // Create or reuse canvas
         let canvas = document.createElement("canvas");
@@ -3315,6 +3343,10 @@ class OS {
                     closest = ColorService.getColor(color);
                     seenColors.set(color, closest);
                 }
+
+                // closest = ColorService.getColor(color);
+                // closest = color;
+
                 if(color !== closest) differentColors++; 
                 ctx.fillStyle = closest;
                 ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
@@ -3356,7 +3388,7 @@ class OS {
 
     pixelMatrixLegacy(content) {
         const pixel = "██";
-        const pixelSize = ConfigService.get("pixel_size") || 12;
+        const pixelSize = ConfigService.get("pixel_size") || 1;
 
         const frag = document.createDocumentFragment(); // buffer
 
