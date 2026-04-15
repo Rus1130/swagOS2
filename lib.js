@@ -208,6 +208,11 @@ class ColorService {
         }
 
         for(const [key, value] of Object.entries(paletteData.definitions)){
+
+            if(this.palette[value] === undefined && value !== "transparent"){
+                throw new OSError(`Palette definition "${key}" references unknown color "${value}"`);
+            }
+
             if(value === "transparent") document.documentElement.style.setProperty(`--${key}`, "transparent");
             else document.documentElement.style.setProperty(`--${key}`, `var(--color_${value})`);
         }
@@ -221,7 +226,7 @@ class ColorService {
 
     static getColor(hexColor){
         if(!this.enabled) throw new OSError("ColorService is disabled");
-        DiagnosticService.record("ColorService_getColor");
+       //  DiagnosticService.record("ColorService_getColor");
 
         if(hexColor === "transparent") return "transparent";
 
@@ -314,6 +319,7 @@ class ConfigService {
         DiagnosticService.record("ConfigService_reload");
         try {
             this.#config = new SwagObjectParser(FilesystemService.resolvePath("/config/user.conf").read()).parse();
+            ColorService.update();
         } catch (e) {
             if(e instanceof OSError) throw e;
             else throw new OSError(`Failed to reload config`, 1);
@@ -884,7 +890,6 @@ class OutputService {
     static add(line) {
         if(!this.enabled) return;
         DiagnosticService.record("OutputService_add");
-        console.log(this.buffer)
         this.buffer.push(line);
     }
 
@@ -1224,14 +1229,15 @@ class SwagObjectParser {
     }
 
     objectToString(obj, indent = 0) {
+        let str = "";
         const indentStr = "    ".repeat(indent);
         for (const [key, value] of Object.entries(obj)) {
             if (typeof value === "object" && !Array.isArray(value)) {
-                console.log(`${indentStr}${key} = {`);
+                str += `${indentStr}${key} = {\n`;
                 this.objectToString(value, indent + 1);
-                console.log(`${indentStr}}`);
+                str += `${indentStr}}\n`;
             } else {
-                console.log(`${indentStr}${key} = ${JSON.stringify(value)}`);
+                str += `${indentStr}${key} = ${JSON.stringify(value)}\n`;
             }
         }
     }
@@ -1519,77 +1525,91 @@ function defineCommands(){
         ]
     }, (params, os, signal) => {
         const action = params.args[0];
-        if(action === "logs"){
-            if(params.flags.clear){
-                DiagnosticService.diagnosticData.length = 0;
-                return;
-            }
+        if (action === "logs") {
+    if (params.flags.clear) {
+        DiagnosticService.diagnosticData.length = 0;
+        return;
+    }
 
-            const uncompressed = [];
+    const data = DiagnosticService.getData();
+    const timestampTemplate = ConfigService.get("timestamp_template");
 
-            const timestamp = ConfigService.get("timestamp_template");
+    const output = [];
 
-            DiagnosticService.getData().forEach(entry => {
-                if(entry.type === "record"){
+    let lastRaw = null;
+    let lastStamp = null;
+    let count = 0;
 
-                    const stackTrace = entry.data.stack
+    const pushLast = () => {
+        if (!lastRaw) return;
+
+        let line = lastRaw;
+
+        // apply compression suffix
+        if (count > 1) {
+            line += ` (x${count})`;
+        }
+
+        // extract timestamp (no regex needed)
+        const endIdx = line.indexOf("]");
+        let stamp = line.slice(1, endIdx);
+
+        if (stamp === lastStamp) {
+            const blank = " ".repeat(stamp.length);
+            line = `[${blank}]` + line.slice(endIdx + 1);
+        } else {
+            lastStamp = stamp;
+        }
+
+        output.push({
+            type: "line",
+            content: line.slice(endIdx + 2), // skip "] "
+            loc: `[${stamp}]`
+        });
+    };
+
+    for (let i = 0; i < data.length; i++) {
+        const entry = data[i];
+
+        let line;
+
+        const time = os.timestamp(timestampTemplate, entry.data.timestamp);
+
+        if (entry.type === "record") {
+            let msg = entry.data.message;
+
+            if (params.flags.trace) {
+                const stack = entry.data.stack
                     .join(" -> ")
-                    .replace("Xsrv.runNext -> OpSys.runChain -> OpSys.runSingle", "Execution Pipeline")
+                    .replace(
+                        "Xsrv.runNext -> OpSys.runChain -> OpSys.runSingle",
+                        "Execution Pipeline"
+                    );
 
-                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] ${entry.data.message}${params.flags.trace ? `\n    ${stackTrace}` : ""}`);
-                } else if(entry.type === "note"){
-                    uncompressed.push(`[${os.timestamp(timestamp, entry.data.timestamp)}] [NOTE] ${entry.data.message}`);
-                }
-            });
-
-            const compressed = [];
-            let increment = 0;
-            for(let i = 0; i < uncompressed.length; i++){
-                let lastEntry = compressed[compressed.length - 1];
-                let currentEntry = uncompressed[i];
-                if(lastEntry == undefined) {
-                    compressed.push(currentEntry);
-                    continue;
-                }
-
-
-                if(currentEntry === lastEntry){
-                    increment++;
-                } else {
-                    if(increment > 0){
-                        compressed[compressed.length - 1] = `${lastEntry} (x${increment + 1})`;
-                        increment = 0;
-                    }
-                    compressed.push(currentEntry);
-                }
+                msg += `\n    ${stack}`;
             }
 
-            let lastStamp = null;
-            for (let i = 0; i < compressed.length; i++) {
+            line = `[${time}] ${msg}`;
+        } else {
+            line = `[${time}] [NOTE] ${entry.data.message}`;
+        }
 
-                let line = compressed[i];
+        // compression logic
+        if (line === lastRaw) {
+            count++;
+        } else {
+            pushLast();
+            lastRaw = line;
+            count = 1;
+        }
+    }
 
-                // match the timestamp inside the first [...]
-                let m = line.match(/^\[([^\]]*)\]/);
-                if (!m) continue;
+    // flush last
+    pushLast();
 
-                let stamp = m[1];
-
-                if (stamp === lastStamp) {
-                    let blank = " ".repeat(stamp.length);
-                    compressed[i] = line.replace(/^\[[^\]]*\]/, `[${blank}]`);
-                } else {
-                    lastStamp = stamp;
-                }
-            }
-
-            const outputLines = compressed.map(x => {
-                const m = x.match(/^\[([^\]]*)\] (.*)$/s);
-                if (!m) return { type: "line", content: x, loc: "" };
-                return { type: "line", content: m[2], loc: "["+m[1]+"]" };
-            }).slice(-params.flags.lines || undefined);
-
-            return outputLines;
+    return params.flags.lines
+        ? output.slice(-params.flags.lines)
+        : output;
         } else if(action === "list"){
             const services = ServiceManager.services;
             const lines = [];
@@ -2136,8 +2156,7 @@ function defineCommands(){
             }
         ],
     }, ({args, flags}, os, signal) => {
-        console.log(flags.recursive)
-        if(flags.recursive){
+        if(flags.recursive != undefined){
             const recurseAmount = flags.recursive > 0 ? flags.recursive : Infinity;
 
             const dir = FilesystemService.resolvePath(FilesystemService.getCurrentPath());
@@ -2555,7 +2574,7 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
-            color_palette = "vibrant"
+            color_palette = "676_rgb"
             default_list_recursive_spacing = 2
             pixel_size = 1
             `, 12
@@ -2709,6 +2728,9 @@ function createFilesystem(){
             lightblue1 = "#0098dc"
             lightblue2 = "#00cdf9"
             lightblue3 = "#0cf1ff"
+            skyblue1 = "#4dc0d1"
+            skyblue2 = "#93e5ec"
+            skyblue3 = "#69cee4"
             cyan = "#94fdff"
             lightpink = "#fdd2ed"
             pink1 = "#f389f5"
@@ -2723,11 +2745,11 @@ function createFilesystem(){
             magenta2 = "#ca52c9"
             rose1 = "#c85086"
             rose2 = "#f68187"
-            red1 = "#f5555d"
-            red2 = "#ff0040"
-            red3 = "#ea323c"
-            red4 = "#c42430"
-            red5 = "#891e2b"
+            rose3 = "#f5555d"
+            red = "#ff0040"
+            red1 = "#ea323c"
+            red2 = "#c42430"
+            red3 = "#891e2b"
             darkred = "#571c27"
         }
 
@@ -2740,10 +2762,10 @@ function createFilesystem(){
             line_background = "black"
             line_color = "white"
 
-            error_background = "red"
+            error_background = "rose3"
             error_color = "white"
 
-            severeError_background = "dark_red"
+            severeError_background = "darkred"
             severeError_color = "white"
 
             savior_background = "grey"
@@ -2766,6 +2788,340 @@ function createFilesystem(){
         }
         `, 12
     ).split("\n"))
+
+    FilesystemService.createFile("676_rgb.conf", "/data/palettes", 
+    normalizeIndentation(
+        `
+        palette = {
+            black = "#000000"
+            deep_navy_blue = "#000033"
+            navy_blue = "#000066"
+            royal_blue_dark = "#000099"
+            royal_blue = "#0000cc"
+            pure_blue = "#0000ff"
+
+            very_dark_forest_green = "#002a00"
+            very_dark_teal = "#002a33"
+            deep_blue_teal = "#002a66"
+            deep_blue = "#002a99"
+            strong_blue = "#002acc"
+            bright_blue = "#002aff"
+
+            dark_forest_green = "#005500"
+            dark_olive_teal = "#005533"
+            dark_teal = "#005566"
+            steel_blue_dark = "#005599"
+            steel_blue = "#0055cc"
+            bright_steel_blue = "#0055ff"
+
+            green = "#008000"
+            green_teal = "#008033"
+            teal_green = "#008066"
+            teal = "#008099"
+            cyan_teal = "#0080cc"
+            cyan = "#0080ff"
+
+            bright_green = "#00aa00"
+            bright_lime_green = "#00aa33"
+            neon_green = "#00aa66"
+            mint_green = "#00aa99"
+            aqua_green = "#00aacc"
+            aqua = "#00aaff"
+
+            neon_green_bright = "#00d400"
+            vivid_lime_green = "#00d433"
+            neon_lime = "#00d466"
+            bright_mint = "#00d499"
+            bright_aqua = "#00d4cc"
+            cyan_bright = "#00d4ff"
+
+            pure_green = "#00ff00"
+            neon_lime_2 = "#00ff33"
+            lime_green = "#00ff66"
+            mint = "#00ff99"
+            mint_aqua = "#00ffcc"
+            aqua_2 = "#00ffff"
+
+            very_dark_red = "#330000"
+            very_dark_magenta = "#330033"
+            dark_purple = "#330066"
+            deep_purple = "#330099"
+            blue_purple = "#3300cc"
+            blue_violet = "#3300ff"
+
+            dark_olive = "#332a00"
+            dark_warm_gray = "#332a33"
+            dark_slate_blue = "#332a66"
+            slate_blue = "#332a99"
+            blue_slate = "#332acc"
+            blue = "#332aff"
+
+            olive_green_dark = "#335500"
+            muted_green = "#335533"
+            dark_teal_gray = "#335566"
+            steel_blue_dim = "#335599"
+            steel_blue_2 = "#3355cc"
+            bright_blue = "#3355ff"
+
+            green_dim = "#338000"
+            green_teal_dim = "#338033"
+            teal_green_dim = "#338066"
+            cyan_teal_dim = "#338099"
+            cyan = "#3380cc"
+            bright_cyan = "#3380ff"
+
+            green_bright = "#33aa00"
+            lime_green = "#33aa33"
+            bright_green_2 = "#33aa66"
+            mint_green_2 = "#33aa99"
+            aqua_green_2 = "#33aacc"
+            cyan_bright_2 = "#33aaff"
+
+            neon_green_2 = "#33d400"
+            neon_lime = "#33d433"
+            lime_bright = "#33d466"
+            mint_bright = "#33d499"
+            aqua_bright = "#33d4cc"
+            cyan_bright_3 = "#33d4ff"
+
+            neon_lime_bright = "#33ff00"
+            lime_bright_2 = "#33ff33"
+            bright_lime = "#33ff66"
+            mint_bright_2 = "#33ff99"
+            aqua_mint = "#33ffcc"
+            aqua_bright_2 = "#33ffff"
+
+            dark_red = "#660000"
+            dark_crimson = "#660033"
+            dark_purple_red = "#660066"
+            purple = "#660099"
+            blue_purple_2 = "#6600cc"
+            vivid_blue = "#6600ff"
+
+            dark_brown_orange = "#662a00"
+            dark_warm_gray_2 = "#662a33"
+            muted_purple = "#662a66"
+            slate_purple = "#662a99"
+            slate_blue_2 = "#662acc"
+            blue_2 = "#662aff"
+
+            olive_brown = "#665500"
+            olive_green = "#665533"
+            muted_teal = "#665566"
+            steel_blue_3 = "#665599"
+            steel_blue_4 = "#6655cc"
+            bright_blue_2 = "#6655ff"
+
+            olive_green_2 = "#668000"
+            olive_teal = "#668033"
+            muted_green_2 = "#668066"
+            cyan_green_dim = "#668099"
+            cyan_2 = "#6680cc"
+            cyan_bright_2 = "#6680ff"
+
+            green_bright_2 = "#66aa00"
+            lime_green_2 = "#66aa33"
+            mint_green_3 = "#66aa66"
+            mint = "#66aa99"
+            aqua_3 = "#66aacc"
+            cyan_3 = "#66aaff"
+
+            neon_green_3 = "#66d400"
+            neon_lime_2 = "#66d433"
+            lime_bright_3 = "#66d466"
+            mint_bright_3 = "#66d499"
+            aqua_bright_3 = "#66d4cc"
+            cyan_bright_4 = "#66d4ff"
+
+            neon_lime_3 = "#66ff00"
+            lime_2 = "#66ff33"
+            bright_lime_2 = "#66ff66"
+            mint_2 = "#66ff99"
+            aqua_mint_2 = "#66ffcc"
+            aqua_4 = "#66ffff"
+
+            dark_red_2 = "#990000"
+            crimson = "#990033"
+            deep_magenta = "#990066"
+            purple_2 = "#990099"
+            bright_purple = "#9900cc"
+            violet = "#9900ff"
+
+            dark_orange_brown = "#992a00"
+            warm_gray = "#992a33"
+            muted_plum = "#992a66"
+            dusty_purple = "#992a99"
+            lavender = "#992acc"
+            blue_purple_3 = "#992aff"
+
+            olive_brown_2 = "#995500"
+            olive = "#995533"
+            muted_green_3 = "#995566"
+            steel_gray = "#995599"
+            steel_blue_5 = "#9955cc"
+            bright_blue_3 = "#9955ff"
+
+            olive_2 = "#998000"
+            olive_green_3 = "#998033"
+            muted_olive = "#998066"
+            cyan_green_dim_2 = "#998099"
+            cyan_4 = "#9980cc"
+            cyan_bright_3 = "#9980ff"
+
+            yellow_green = "#99aa00"
+            lime_olive = "#99aa33"
+            mint_green_4 = "#99aa66"
+            mint_gray = "#99aa99"
+            aqua_5 = "#99aacc"
+            sky_blue = "#99aaff"
+
+            neon_yellow_green = "#99d400"
+            lime_yellow = "#99d433"
+            light_lime = "#99d466"
+            pale_mint = "#99d499"
+            pale_aqua = "#99d4cc"
+            sky_blue_light = "#99d4ff"
+
+            neon_yellow_green_2 = "#99ff00"
+            lime_bright_2 = "#99ff33"
+            lime_3 = "#99ff66"
+            mint_3 = "#99ff99"
+            aqua_mint_3 = "#99ffcc"
+            aqua_6 = "#99ffff"
+
+            red = "#cc0000"
+            crimson_2 = "#cc0033"
+            hot_pink_red = "#cc0066"
+            magenta = "#cc0099"
+            bright_magenta = "#cc00cc"
+            violet_2 = "#cc00ff"
+
+            red_orange = "#cc2a00"
+            dark_red_gray = "#cc2a33"
+            muted_plum_2 = "#cc2a66"
+            dusty_purple_2 = "#cc2a99"
+            lavender_2 = "#cc2acc"
+            blue_purple_4 = "#cc2aff"
+
+            orange = "#cc5500"
+            burnt_orange = "#cc5533"
+            muted_red_orange = "#cc5566"
+            rose = "#cc5599"
+            pink = "#cc55cc"
+            bright_pink = "#cc55ff"
+
+            golden_brown = "#cc8000"
+            orange_brown = "#cc8033"
+            muted_orange = "#cc8066"
+            dusty_rose = "#cc8099"
+            pink_lavender = "#cc80cc"
+            light_purple = "#cc80ff"
+
+            gold = "#ccaa00"
+            golden_yellow = "#ccaa33"
+            light_gold = "#ccaa66"
+            pale_gold = "#ccaa99"
+            pale_cyan = "#ccaacc"
+            light_sky_blue = "#ccaaff"
+
+            yellow = "#ccd400"
+            bright_yellow = "#ccd433"
+            yellow_lime = "#ccd466"
+            pale_lime = "#ccd499"
+            pale_cyan_2 = "#ccd4cc"
+            sky_blue = "#ccd4ff"
+
+            neon_yellow = "#ccff00"
+            bright_yellow_2 = "#ccff33"
+            yellow_lime_2 = "#ccff66"
+            pale_yellow_green = "#ccff99"
+            mint_white = "#ccffcc"
+            ice_blue = "#ccffff"
+
+            red_2 = "#ff0000"
+            bright_red = "#ff0033"
+            hot_pink_red_2 = "#ff0066"
+            magenta_2 = "#ff0099"
+            neon_pink = "#ff00cc"
+            magenta_purple = "#ff00ff"
+
+            red_orange_2 = "#ff2a00"
+            crimson_orange = "#ff2a33"
+            pink_red = "#ff2a66"
+            hot_pink = "#ff2a99"
+            neon_pink_2 = "#ff2acc"
+            violet_pink = "#ff2aff"
+
+            orange_2 = "#ff5500"
+            bright_orange = "#ff5533"
+            coral = "#ff5566"
+            pink_orange = "#ff5599"
+            pink_2 = "#ff55cc"
+            bright_pink_2 = "#ff55ff"
+
+            orange_3 = "#ff8000"
+            bright_orange_2 = "#ff8033"
+            peach = "#ff8066"
+            light_pink = "#ff8099"
+            pink_3 = "#ff80cc"
+            light_magenta = "#ff80ff"
+
+            amber = "#ffaa00"
+            orange_yellow = "#ffaa33"
+            peach_2 = "#ffaa66"
+            light_peach = "#ffaa99"
+            pale_pink = "#ffaacc"
+            lavender_pink = "#ffaaff"
+
+            gold_yellow = "#ffd400"
+            bright_gold = "#ffd433"
+            pale_gold = "#ffd466"
+            light_gold = "#ffd499"
+            cream = "#ffd4cc"
+            lavender_cream = "#ffd4ff"
+
+            yellow_2 = "#ffff00"
+            bright_yellow_3 = "#ffff33"
+            pale_yellow = "#ffff66"
+            soft_yellow = "#ffff99"
+            cream_2 = "#ffffcc"
+            white = "#ffffff"
+        }
+
+        definitions = {
+            terminal_background = "black"
+
+            loc_background = "black"
+            loc_color = "white"
+
+            line_background = "black"
+            line_color = "white"
+
+            error_background = "bright_red"
+            error_color = "white"
+
+            severeError_background = "dark_red"
+            severeError_color = "white"
+
+            savior_background = "cyan_green_dim"
+            savior_color = "white"
+
+            enabled_background = "transparent"
+            enabled_color = "lime_green_2"
+
+            disabled_background = "transparent"
+            disabled_color = "red_orange_2"
+
+            highlight_background = "magenta_purple"
+            highlight_color = "white"
+
+            editor_background = "black"
+            editor_color = "white"
+
+            editor_loc_background = "black"
+            editor_loc_color = "white"
+        }
+        `).split("\n"))
 
     DiagnosticService.enable();
 }
@@ -3040,8 +3396,6 @@ class OS {
         if (!valid) {
             throw new OSError(error);
         }
-
-        console.log(fragment, verification)
 
         fragment.flags = verification.flags;
 
@@ -3353,10 +3707,6 @@ class OS {
             }
         }
 
-        // get the % of pixels that had a different color than the palette's closest match
-        const colorDifference = (differentColors / totalPixels) * 100;
-        DiagnosticService.record(`OS_pixelMatrix color_difference ${colorDifference.toFixed(2)}% (${differentColors} out of ${totalPixels} pixels)`);
-
         let sadFaceDetected = false;
         try {
             const test = ctx.getImageData(0, 0, 1, 1).data;
@@ -3379,6 +3729,9 @@ class OS {
 
         const renderEnd = performance.now() - renderStart;
         DiagnosticService.record(`OS_pixelMatrix end   ${this.timestamp(template)} renderTime=${renderEnd}ms`);
+        // get the % of pixels that had a different color than the palette's closest match
+        const colorDifference = (differentColors / totalPixels) * 100;
+        DiagnosticService.record(`OS_pixelMatrix color_difference ${colorDifference.toFixed(2)}% (${differentColors} out of ${totalPixels} pixels)`);
 
         const line = document.createElement("div");
         line.classList.add("line");
@@ -3491,9 +3844,12 @@ class OS {
             }
         });
 
-        document.body.addEventListener('click', () => {
-            contentElem.focus();
+        document.body.addEventListener('click', (e) => {
+            if(!e.target.classList.contains('editor')) {    
+                contentElem.focus();
+            }
         });
+
 
         locElem.textContent = FilesystemService.getCurrentPath() + ">";
 
