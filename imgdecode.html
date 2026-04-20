@@ -1,5 +1,6 @@
-<canvas id="c"></canvas>
-
+<head>
+    <canvas id="c"></canvas>
+</head>
 
 <script src="https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.min.js"></script>
 <script type="module">
@@ -41,7 +42,6 @@
             }
 
             if(type == "img"){
-
                 if(content.length < 2){
                     throw new OSError("Invalid img file format: missing width and/or pixel data");
                 }
@@ -79,39 +79,67 @@
         }
 
         static encodeImage(hex2DArray) {
-            const bytes = this.hex2DArrayToBytes(hex2DArray);
+
+            let rleCompressed2D = [];
+
+            for (let y = 0; y < hex2DArray.length; y++) {
+                let rleLength = 1;
+                let rleRow = [];
+
+                for (let x = 0; x < hex2DArray[y].length; x++) {
+                    if (x === 0) {
+                        rleRow.push(hex2DArray[y][x]);
+                    } else {
+                        if (hex2DArray[y][x] === hex2DArray[y][x - 1]) {
+                            rleLength++;
+                        } else {
+                            if (rleLength > 1) {
+                                rleRow.push("$" + rleLength);
+                            }
+                            rleRow.push(hex2DArray[y][x]);
+                            rleLength = 1;
+                        }
+                    }
+                }
+
+                // flush last run
+                if (rleLength > 1) {
+                    rleRow.push("$" + rleLength);
+                }
+
+                rleCompressed2D.push(rleRow);
+            }
+
+            const bytes = this.hex2DArrayToBytes(rleCompressed2D);
             return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+this.imgOffsetAmount));
         }
 
+       // make it actually work with RLE 
         decodeImage(deflatedBytes) {
-            const bytes = Array.from(ImageReader.enflate(
-                new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
-            ));
-
-            const totalPixels = bytes.length / 3;
-            if(totalPixels % this.width !== 0){
-                console.warn("Width does not evenly divide the total pixels. Using computed height.");
-            }
-
-            const computedHeight = Math.ceil(totalPixels / this.width);
-
-            const result = [];
-            for(let y = 0; y < computedHeight; y++){
-                const row = [];
-                for(let x = 0; x < this.width; x++){
-                    const idx = (y * this.width + x) * 3;
-                    if(idx + 2 >= bytes.length) break; // safety
-                    const r = bytes[idx];
-                    const g = bytes[idx + 1];
-                    const b = bytes[idx + 2];
+            const bytes = Array.from(ImageReader.enflate( 
+                new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount))) 
+            )); 
+            const totalPixels = bytes.length / 3; 
+            if(totalPixels % this.width !== 0){ 
+                console.warn("Width does not evenly divide the total pixels. Using computed height."); 
+            } 
+            const computedHeight = Math.ceil(totalPixels / this.width); 
+            const result = []; 
+            for(let y = 0; y < computedHeight; y++){ 
+                const row = []; 
+                for(let x = 0; x < this.width; x++){ 
+                    const idx = (y * this.width + x) * 3; 
+                    if(idx + 2 >= bytes.length) break; 
+                    // safety 
+                    const r = bytes[idx]; 
+                    const g = bytes[idx + 1]; 
+                    const b = bytes[idx + 2]; 
                     row.push(`#${r.toString(16).padStart(2,"0")}${g.toString(16).padStart(2,"0")}${b.toString(16).padStart(2,"0")}`);
-                }
-                result.push(row);
-            }
-
-            return result;
+                } 
+                result.push(row); 
+            } 
+            return result; 
         }
-
 
         read(hashtag = true){
             if(this.data === undefined){
@@ -233,7 +261,7 @@
                 }
 
                 // Do whatever you want with the pixel color
-                console.log(`(${x},${y}) → rgba(${r},${g},${b},${a})`);
+                // console.log(`(${x},${y}) → rgba(${r},${g},${b},${a})`);
 
                 // turn it into a hex number, no alpha
 
@@ -260,13 +288,13 @@
     const height = 438;
 
     scanPixels("pillar.png", width, height).then(() => {
-        console.log("bmap:")
+        // console.log("bmap:")
         const bmap = JSON.stringify(bitmap)
-        console.log(bmap);
-        console.log("---");
+        // console.log(bmap);
+        // console.log("---");
         console.log("img:")
 
-        console.log(bitmap)
+        // console.log(bitmap)
 
         // turn it into an indexed color file using its colors as a color palette, and using RLE to compress runs of the same color
         // color palette: transparent #000000 #ff0000 #00ff00 #0000ff
@@ -279,8 +307,8 @@
 
 
         
-        // const reader = new ImageReader("img", [encoded, width]);
-        // console.log(reader.decodeImage(encoded.split("")));
+        const reader = new ImageReader("img", [encoded, width]);
+        console.log(reader.decodeImage(encoded.split("")));
 
     })
 </script>

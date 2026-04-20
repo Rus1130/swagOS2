@@ -8,7 +8,7 @@ class ImageReader {
         this.type = type;
         this.raw = content;
 
-        if(type == "bpal"){
+        if(type == "ici"){
             this.width = parseInt(content[1]);
             this.height = parseInt(content[2]);
             this.colorCount = parseInt(content[3]);
@@ -104,7 +104,7 @@ class ImageReader {
         }
 
         switch(this.type){
-            case "bpal": {
+            case "ici": {
 
                 const flatPixels = this.data.split(" ");
 
@@ -2305,7 +2305,7 @@ function defineCommands(){
         const file = FilesystemService.resolvePath(path, "full");
         if(!(file instanceof OSFile)) throw new OSError(`file "${path}" could not be found`);
 
-        if(["bpal", "bmap", "img"].includes(file.type)){
+        if(["ici", "bmap", "img"].includes(file.type)){
             const reader = new ImageReader(file.type, file.read());
             return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy, pixelSize: flags.pixelsize }];
         } else {
@@ -2599,7 +2599,7 @@ function createFilesystem(){
     FilesystemService.createFile("filetypes.txt", "/documents", [
         "txt - Plain text file",
         "conf - json-like config file",
-        "bpal - custom image format used for storing pixel art images, especially spritesheets. Stands for \"Bitmap PALette\". Each line represents a row of pixels, and each value in the line corresponds to a color index in the palette file.",
+        "ici - indexed color image. starts with a header, width, height, palette key, followed by each row of pixels, where each value corresponds to a palette index",
         "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color",
         "img - essentially a compressed bitmap"
     ]);
@@ -2612,7 +2612,7 @@ function createFilesystem(){
     // 312x438
     FilesystemService.createFile("pillar.img", "/documents/images/test", IMAGES.pillar)
 
-    FilesystemService.createFile("guy.bpal", "/documents/images/test", ["bpal","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
+    FilesystemService.createFile("guy.ici", "/documents/images/test", ["ici","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
 
     FilesystemService.createFile("default.conf", "/data/palettes", 
         normalizeIndentation(
