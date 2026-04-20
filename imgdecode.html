@@ -268,6 +268,12 @@
 
         console.log(bitmap)
 
+        // turn it into an indexed color file using its colors as a color palette, and using RLE to compress runs of the same color
+        // color palette: transparent #000000 #ff0000 #00ff00 #0000ff
+        // image example: #000000 #000000 #ff0000 #ff0000 #ff0000 #00ff00 #00ff00 #0000ff
+        // output example: 112.3334
+        // and finally all of that is compressed
+
         const encoded = ImageReader.encodeImage(bitmap.map(row => row.split(" "))).join("")
         console.log(JSON.stringify([encoded, width]))
 
