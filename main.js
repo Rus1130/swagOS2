@@ -4,7 +4,7 @@ const os = new OS(document.getElementById('terminal'));
 
 os.line('Welcome to swagOS2 ===', "===");
 os.commandLine();
-os.sendCommand("ls -r")
+os.sendCommand("ls -r -s")
 //os.sendCommand("ls -r=1")
 os.sendCommand("v doc/i/t/p.img")
 //os.sendCommand("ef c/u")
