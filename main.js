@@ -7,7 +7,7 @@ os.commandLine();
 os.sendCommand("ls -r")
 //os.sendCommand("ls -r=1")
 os.sendCommand("v doc/i/t/p.img")
-os.sendCommand("ef c/u")
+//os.sendCommand("ef c/u")
 // os.sendCommand("service logs")
 //os.sendCommand("p doc/i/t/s.img")
 // os.sendCommand("service logs")

@@ -3,163 +3,202 @@ import IMAGES from "./longfiles.js";
 class ImageReader {
     static imgOffsetAmount = 200;
 
-    constructor(type, content) {
+    // =========================
+    // ENCODE
+    // =========================
+    static encodeImage(reader) {
+        // deep copy so we NEVER mutate original data
+        const bitmap = reader.bitmap.map(row => row.slice());
+        const palette = reader.palette.map(c => c.replace("#", ""));
 
-        this.type = type;
-        this.raw = content;
+        // convert hex colors → palette indices
+        for (let y = 0; y < bitmap.length; y++) {
+            const row = bitmap[y];
 
-        if(type == "ici"){
-            this.width = parseInt(content[1]);
-            this.height = parseInt(content[2]);
-            this.colorCount = parseInt(content[3]);
+            for (let x = 0; x < row.length; x++) {
+                const val = row[x].replace("#", "");
+                const index = palette.indexOf(val);
 
-            if(this.colorCount > 36){
-                throw new OSError("Color count exceeds maximum of 36");
+                if (index === -1) {
+                    throw new OSError("Color not found in palette");
+                }
+
+                row[x] = index + 2; // reserve 0,1 for control codes
             }
-
-            this.palette = content.slice(4, 4 + this.colorCount);
-            this.data = content[4 + this.colorCount];
         }
 
-        if(type == "bmap"){
-            this.width = parseInt(content[1]);
-            this.height = parseInt(content[2]);
+        // run-length encoding
+        let rle = [];
 
-            this.data = content.slice(3);
-        }
+        for (let y = 0; y < bitmap.length; y++) {
+            const row = bitmap[y];
+            let out = [];
 
-        if(type == "img"){
+            let run = 1;
 
-            if(content.length < 2){
-                throw new OSError("Invalid img file format: missing width and pixel data");
+            for (let x = 0; x < row.length; x++) {
+                if (x === 0) {
+                    out.push(row[x]);
+                } else if (row[x] === row[x - 1]) {
+                    run++;
+                } else {
+                    if (run > 1) {
+                        out.push(0, run);
+                    }
+                    out.push(row[x]);
+                    run = 1;
+                }
             }
 
-            if(isNaN(parseInt(content[1]))){
-                throw new OSError("Invalid img file format: width must be an integer");
+            if (run > 1) {
+                out.push(0, run);
             }
 
-            this.data = content[0].split("");
-            this.width = content[1];
+            out.push(1); // end of row
+            rle.push(out);
         }
+
+        const bytes = ImageReader.hex2DArrayToBytes(rle);
+        const compressed = ImageReader.deflate(bytes);
+
+        return Array.from(compressed)
+            .map(x => String.fromCharCode(x + ImageReader.imgOffsetAmount))
+            .join("");
     }
 
-    static hex2DArrayToBytes(hex2DArray) {
-        const flat = hex2DArray.flat();
-        const bytes = [];
+    // =========================
+    // DECODE (optional future fix)
+    // =========================
+    static decodeImage(file) {
 
-        for (const hex of flat) {
-            const h = hex.startsWith("#") ? hex.slice(1) : hex;
-            const r = parseInt(h.slice(0, 2), 16);
-            const g = parseInt(h.slice(2, 4), 16);
-            const b = parseInt(h.slice(4, 6), 16);
-            bytes.push(r, g, b);
+        const data = file[file[1] + 2];
+
+        let palette = file.slice(2, 2 + file[1])
+            .map(c => c.replace("#", ""));
+
+
+        if (typeof data !== "string") {
+            throw new Error("Invalid compressed data");
         }
 
-        return new Uint8Array(bytes);
+        const bytes = Array.from(
+            ImageReader.inflate(
+                new Uint8Array(
+                    data.split("").map(c =>
+                        c.charCodeAt(0) - ImageReader.imgOffsetAmount
+                    )
+                )
+            )
+        );
+
+        const pixels = [];
+        let row = [];
+
+        for (let i = 0; i < bytes.length; i++) {
+            const v = bytes[i];
+
+            if (v === 0) {
+                const count = bytes[++i];
+                const last = row[row.length - 1];
+
+                for (let j = 0; j < count - 1; j++) {
+                    row.push(last);
+                }
+
+            } else if (v === 1) {
+                pixels.push(row);
+                row = [];
+
+            } else {
+                row.push(v);
+            }
+        }
+
+        return pixels.map(r =>
+            r.map(idx => "#" + palette[idx - 2])
+        );
+    }
+    // =========================
+    static hex2DArrayToBytes(arr) {
+        return new Uint8Array(arr.flat());
     }
 
     static deflate(bytes) {
         return pako.deflate(bytes);
     }
 
-    static enflate(bytes) {
+    static inflate(bytes) {
         return pako.inflate(bytes);
     }
 
-    static encodeImage(hex2DArray) {
-        const bytes = this.hex2DArrayToBytes(hex2DArray);
-        return Array.from(this.deflate(bytes)).map(x => String.fromCharCode(x+this.imgOffsetAmount));
-    }
+    // =========================
+    constructor(type, array2D) {
+        if (!Array.isArray(array2D) || array2D.some(r => !Array.isArray(r))) {
+            throw new OSError("Invalid image data (0)");
+        }
 
-    decodeImage(deflatedBytes) {
-        const bytes = Array.from(ImageReader.enflate(
-            new Uint8Array(deflatedBytes.map(x => (x.charCodeAt(0) - ImageReader.imgOffsetAmount)))
-        ));
+        if (array2D.length === 0 || array2D[0].length === 0) {
+            throw new OSError("Invalid image data (1)");
+        }
 
-        const totalPixels = bytes.length / 3;
+        this.type = type;
+        this.height = array2D.length;
+        this.width = array2D[0].length;
 
-        const computedHeight = Math.ceil(totalPixels / this.width);
+        // IMPORTANT: store raw reference, but never mutate it
+        this.bitmap = array2D;
 
-        const result = [];
-        for(let y = 0; y < computedHeight; y++){
-            const row = [];
-            for(let x = 0; x < this.width; x++){
-                const idx = (y * this.width + x) * 3;
-                if(idx + 2 >= bytes.length) break; // safety
-                const r = bytes[idx];
-                const g = bytes[idx + 1];
-                const b = bytes[idx + 2];
-                row.push(`#${r.toString(16).padStart(2,"0")}${g.toString(16).padStart(2,"0")}${b.toString(16).padStart(2,"0")}`);
+        const colorFrequency = {};
+        for (let row of array2D) {
+            for (let color of row) {
+                colorFrequency[color] = (colorFrequency[color] || 0) + 1;
             }
-            result.push(row);
         }
 
-        return result;
+        this.palette = Object.entries(colorFrequency)
+            .sort((a, b) => b[1] - a[1])
+            .map(x => x[0]);
     }
 
+    // =========================
+    toFile(stringify = false) {
+        let fileContent;
 
-    read(hashtag = true){
-        if(this.data === undefined){
-            throw new OSError("Failed to parse image data")
-        }
-
-        switch(this.type){
-            case "ici": {
-
-                const flatPixels = this.data.split(" ");
-
-                if (flatPixels.length !== this.width * this.height) {
-                    throw new OSError(`width * height mismatch between header and pixel data: expected ${this.width * this.height} pixels, got ${flatPixels.length}`);
-                }
-
-                try {
-                    const image = [];
-                    for (let y = 0; y < this.height; y++) {
-                        const row = flatPixels.slice(y * this.width, (y + 1) * this.width);
-
-                        for(let x = 0; x < row.length; x++){
-
-                            if(this.palette[parseInt(row[x], 36)] === undefined){
-                                throw new OSError(`Pixel value "${row[x]}" does not correspond to a color in the palette`);
-                            }
-
-                            if(row[x] === "#") row[x] = "transparent";
-                            else row[x] = (hashtag ? "#" : "")+this.palette[parseInt(row[x], 36)];
-                        }
-
-                        image.push(row);
-                    }
-
-                    return image;
-                } catch (e) {
-                    if(e instanceof OSError) throw e;
-                    else throw new OSError("Failed to parse image data");
-                }
-            } break;
-
+        switch (this.type) {
             case "bmap": {
-                try {
-                    return this.data.map(line => line.split(" ").map(hex => (hashtag ? "#" : "")+hex));
-                } catch (e) {
-                    throw new OSError("Failed to parse image data");
+
+                if(this.width != this.bitmap[0].length){
+                    throw new OSError("Inconsistent row lengths in bitmap data");
                 }
+
+                if(this.height != this.bitmap.length){
+                    throw new OSError("Height does not match number of rows in bitmap data");
+                }
+
+                fileContent = [
+                    "bmap",
+                    this.width,
+                    this.height,
+                    this.bitmap.map(row => row.join(" "))
+                ];
             } break;
 
             case "img": {
-                try {
-                    return this.decodeImage(this.data);
-                } catch (e) {
-                    throw new OSError("Failed to decode image data");
-                }
-            } break;
+                const data = ImageReader.encodeImage(this);
 
-            default: {
-                throw new OSError(`Unsupported image type: "${this.type}"`);
+                fileContent = [
+                    "img",
+                    this.palette.length,
+                    ...this.palette,
+                    data,
+                ];
+                break;
             }
         }
+
+        return stringify ? JSON.stringify(fileContent) : fileContent;
     }
 }
-
 
 class ColorService {
     static enabled = false;
@@ -2304,10 +2343,28 @@ function defineCommands(){
 
         const file = FilesystemService.resolvePath(path, "full");
         if(!(file instanceof OSFile)) throw new OSError(`file "${path}" could not be found`);
+        const fileData = file.read();
 
-        if(["ici", "bmap", "img"].includes(file.type)){
-            const reader = new ImageReader(file.type, file.read());
-            return [{ type: "pixel_matrix", content: reader.read(), legacy: flags.legacy, pixelSize: flags.pixelsize }];
+        if(["bmap", "img"].includes(file.type)){
+
+            let imageData = [];
+
+            if(file.type === "img"){
+                imageData = ImageReader.decodeImage(file.read());
+            } else if(file.type === "bmap"){
+
+                let width = parseInt(fileData[1]);
+                let height = parseInt(fileData[2]);
+                let data = fileData.slice(3).map(x => x.split(" ").map(x => "#"+x))
+
+                if(data.length !== height) throw new OSError(`Invalid bmap file: height does not match data length`);
+                if(data[0].length !== width) throw new OSError(`Invalid bmap file: width does not match data width`);
+                if(data.some(row => row.length !== width)) throw new OSError(`Invalid bmap file: width does not match data width`);
+
+                imageData = data;
+            }
+
+            return [{ type: "pixel_matrix", content: imageData, legacy: flags.legacy, pixelSize: flags.pixelsize }];
         } else {
             return { type: "error", content: `Unsupported file type: "${file.type}".`, loc: "" };
         }
@@ -2574,7 +2631,7 @@ function createFilesystem(){
         normalizeIndentation(
             `
             timestamp_template = "d/mn/Y h:m:s.l"
-            color_palette = "676_rgb"
+            color_palette = "default"
             default_list_recursive_spacing = 2
             pixel_size = 1
             `, 12
@@ -2599,9 +2656,8 @@ function createFilesystem(){
     FilesystemService.createFile("filetypes.txt", "/documents", [
         "txt - Plain text file",
         "conf - json-like config file",
-        "ici - indexed color image. starts with a header, width, height, palette key, followed by each row of pixels, where each value corresponds to a palette index",
         "bmap - straight bitmap. starts with a header, width, height, followed by each row of pixels, where each value corresponds to a hex color",
-        "img - essentially a compressed bitmap"
+        "img - compressed image"
     ]);
 
     // 330x400
@@ -2612,7 +2668,7 @@ function createFilesystem(){
     // 312x438
     FilesystemService.createFile("pillar.img", "/documents/images/test", IMAGES.pillar)
 
-    FilesystemService.createFile("guy.ici", "/documents/images/test", ["ici","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
+    // FilesystemService.createFile("guy.ici", "/documents/images/test", ["ici","40","24","16","000000","FFFFFF","FF0000","00FF00","0000FF","FFFF00","FF00FF","00FFFF","800000","008000","000080","808000","800080","008080","C0C0C0","808080","7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 2 2 3 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 3 3 3 2 2 3 3 3 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 7 0 0 0 7 7 7 7 0 0 0 7 7 7 7 0 7 7 7 3 3 3 3 2 2 3 3 3 3 3 3 7 7 7 7 7 7 7 0 7 0 0 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 3 3 3 3 3 3 3 3 3 3 3 3 7 7 7 7 7 7 7 0 0 0 7 7 0 7 7 7 0 7 7 7 0 7 7 7 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 0 0 7 7 0 7 7 7 0 7 7 0 0 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 0 0 0 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 0 7 7 7 7 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 0 0 0 0 0 0 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 0 7 7 7 7 7 7 7 7 7 7 7 7 7 8 8 8 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 0 7 7 7 7 7 7 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 0 9 9 9 0 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9"]);
 
     FilesystemService.createFile("default.conf", "/data/palettes", 
         normalizeIndentation(
@@ -2679,449 +2735,449 @@ function createFilesystem(){
 
 
     // https://lospec.com/palette-list/endesga-64
-    FilesystemService.createFile("vibrant.conf", "/data/palettes", 
-    normalizeIndentation(
-        `
-        palette = {
-            black = "#000000"
-            black2 = "#131313"
-            darkgrey1 = "#1b1b1b"
-            darkgrey2 = "#272727"
-            grey = "#3d3d3d"
-            lightgrey1 = "#5d5d5d"
-            lightgrey2 = "#858585"
-            silver = "#b4b4b4"
-            white = "#ffffff"
-            bluegrey1 = "#c7cfdd"
-            bluegrey2 = "#92a1b9"
-            bluesteel = "#657392"
-            slate1 = "#424c6e"
-            navy1 = "#2a2f4e"
-            navy2 = "#1a1932"
-            navy3 = "#0e071b"
-            deepnavy = "#1c121c"
-            brown1 = "#391f21"
-            brown2 = "#5d2c28"
-            brown3 = "#8a4836"
-            brown4 = "#bf6f4a"
-            lightbrown1 = "#e69c69"
-            lightbrown2 = "#f6ca9f"
-            tan = "#f9e6cf"
-            gold = "#edab50"
-            orange1 = "#e07438"
-            redorange = "#c64524"
-            deepred = "#8e251d"
-            darkorange = "#ff5000"
-            orange2 = "#ed7614"
-            orangeyellow = "#ffa214"
-            yellow = "#ffc825"
-            paleyellow = "#ffeb57"
-            palegreen = "#d3fc7e"
-            green1 = "#99e65f"
-            green2 = "#5ac54f"
-            green3 = "#33984b"
-            darkgreen = "#1e6f50"
-            teal = "#134c4c"
-            darkblue1 = "#0c2e44"
-            darkblue2 = "#00396d"
-            blue = "#0069aa"
-            lightblue1 = "#0098dc"
-            lightblue2 = "#00cdf9"
-            lightblue3 = "#0cf1ff"
-            skyblue1 = "#4dc0d1"
-            skyblue2 = "#93e5ec"
-            skyblue3 = "#69cee4"
-            cyan = "#94fdff"
-            lightpink = "#fdd2ed"
-            pink1 = "#f389f5"
-            pink2 = "#db3ffd"
-            purple = "#7a09fa"
-            deepblue = "#3003d9"
-            darkblue3 = "#0c0293"
-            darkblue4 = "#03193f"
-            darkpurple1 = "#3b1443"
-            darkpurple2 = "#622461"
-            magenta1 = "#93388f"
-            magenta2 = "#ca52c9"
-            rose1 = "#c85086"
-            rose2 = "#f68187"
-            rose3 = "#f5555d"
-            red = "#ff0040"
-            red1 = "#ea323c"
-            red2 = "#c42430"
-            red3 = "#891e2b"
-            darkred = "#571c27"
-        }
-
-        definitions = {
-            terminal_background = "black"
-
-            loc_background = "black"
-            loc_color = "white"
-
-            line_background = "black"
-            line_color = "white"
-
-            error_background = "rose3"
-            error_color = "white"
-
-            severeError_background = "darkred"
-            severeError_color = "white"
-
-            savior_background = "grey"
-            savior_color = "white"
-
-            enabled_background = "transparent"
-            enabled_color = "green2"
-
-            disabled_background = "transparent"
-            disabled_color = "red2"
-
-            highlight_background = "magenta2"
-            highlight_color = "white"
-
-            editor_background = "black"
-            editor_color = "white"
-
-            editor_loc_background = "black"
-            editor_loc_color = "white"
-        }
-        `, 12
-    ).split("\n"))
-
-    FilesystemService.createFile("676_rgb.conf", "/data/palettes", 
-    normalizeIndentation(
-        `
-        palette = {
-            black = "#000000"
-            deep_navy_blue = "#000033"
-            navy_blue = "#000066"
-            royal_blue_dark = "#000099"
-            royal_blue = "#0000cc"
-            pure_blue = "#0000ff"
-
-            very_dark_forest_green = "#002a00"
-            very_dark_teal = "#002a33"
-            deep_blue_teal = "#002a66"
-            deep_blue = "#002a99"
-            strong_blue = "#002acc"
-            bright_blue = "#002aff"
-
-            dark_forest_green = "#005500"
-            dark_olive_teal = "#005533"
-            dark_teal = "#005566"
-            steel_blue_dark = "#005599"
-            steel_blue = "#0055cc"
-            bright_steel_blue = "#0055ff"
-
-            green = "#008000"
-            green_teal = "#008033"
-            teal_green = "#008066"
-            teal = "#008099"
-            cyan_teal = "#0080cc"
-            cyan = "#0080ff"
-
-            bright_green = "#00aa00"
-            bright_lime_green = "#00aa33"
-            neon_green = "#00aa66"
-            mint_green = "#00aa99"
-            aqua_green = "#00aacc"
-            aqua = "#00aaff"
-
-            neon_green_bright = "#00d400"
-            vivid_lime_green = "#00d433"
-            neon_lime = "#00d466"
-            bright_mint = "#00d499"
-            bright_aqua = "#00d4cc"
-            cyan_bright = "#00d4ff"
-
-            pure_green = "#00ff00"
-            neon_lime_2 = "#00ff33"
-            lime_green = "#00ff66"
-            mint = "#00ff99"
-            mint_aqua = "#00ffcc"
-            aqua_2 = "#00ffff"
-
-            very_dark_red = "#330000"
-            very_dark_magenta = "#330033"
-            dark_purple = "#330066"
-            deep_purple = "#330099"
-            blue_purple = "#3300cc"
-            blue_violet = "#3300ff"
-
-            dark_olive = "#332a00"
-            dark_warm_gray = "#332a33"
-            dark_slate_blue = "#332a66"
-            slate_blue = "#332a99"
-            blue_slate = "#332acc"
-            blue = "#332aff"
-
-            olive_green_dark = "#335500"
-            muted_green = "#335533"
-            dark_teal_gray = "#335566"
-            steel_blue_dim = "#335599"
-            steel_blue_2 = "#3355cc"
-            bright_blue = "#3355ff"
-
-            green_dim = "#338000"
-            green_teal_dim = "#338033"
-            teal_green_dim = "#338066"
-            cyan_teal_dim = "#338099"
-            cyan = "#3380cc"
-            bright_cyan = "#3380ff"
-
-            green_bright = "#33aa00"
-            lime_green = "#33aa33"
-            bright_green_2 = "#33aa66"
-            mint_green_2 = "#33aa99"
-            aqua_green_2 = "#33aacc"
-            cyan_bright_2 = "#33aaff"
-
-            neon_green_2 = "#33d400"
-            neon_lime = "#33d433"
-            lime_bright = "#33d466"
-            mint_bright = "#33d499"
-            aqua_bright = "#33d4cc"
-            cyan_bright_3 = "#33d4ff"
-
-            neon_lime_bright = "#33ff00"
-            lime_bright_2 = "#33ff33"
-            bright_lime = "#33ff66"
-            mint_bright_2 = "#33ff99"
-            aqua_mint = "#33ffcc"
-            aqua_bright_2 = "#33ffff"
-
-            dark_red = "#660000"
-            dark_crimson = "#660033"
-            dark_purple_red = "#660066"
-            purple = "#660099"
-            blue_purple_2 = "#6600cc"
-            vivid_blue = "#6600ff"
-
-            dark_brown_orange = "#662a00"
-            dark_warm_gray_2 = "#662a33"
-            muted_purple = "#662a66"
-            slate_purple = "#662a99"
-            slate_blue_2 = "#662acc"
-            blue_2 = "#662aff"
-
-            olive_brown = "#665500"
-            olive_green = "#665533"
-            muted_teal = "#665566"
-            steel_blue_3 = "#665599"
-            steel_blue_4 = "#6655cc"
-            bright_blue_2 = "#6655ff"
-
-            olive_green_2 = "#668000"
-            olive_teal = "#668033"
-            muted_green_2 = "#668066"
-            cyan_green_dim = "#668099"
-            cyan_2 = "#6680cc"
-            cyan_bright_2 = "#6680ff"
-
-            green_bright_2 = "#66aa00"
-            lime_green_2 = "#66aa33"
-            mint_green_3 = "#66aa66"
-            mint = "#66aa99"
-            aqua_3 = "#66aacc"
-            cyan_3 = "#66aaff"
-
-            neon_green_3 = "#66d400"
-            neon_lime_2 = "#66d433"
-            lime_bright_3 = "#66d466"
-            mint_bright_3 = "#66d499"
-            aqua_bright_3 = "#66d4cc"
-            cyan_bright_4 = "#66d4ff"
-
-            neon_lime_3 = "#66ff00"
-            lime_2 = "#66ff33"
-            bright_lime_2 = "#66ff66"
-            mint_2 = "#66ff99"
-            aqua_mint_2 = "#66ffcc"
-            aqua_4 = "#66ffff"
-
-            dark_red_2 = "#990000"
-            crimson = "#990033"
-            deep_magenta = "#990066"
-            purple_2 = "#990099"
-            bright_purple = "#9900cc"
-            violet = "#9900ff"
-
-            dark_orange_brown = "#992a00"
-            warm_gray = "#992a33"
-            muted_plum = "#992a66"
-            dusty_purple = "#992a99"
-            lavender = "#992acc"
-            blue_purple_3 = "#992aff"
-
-            olive_brown_2 = "#995500"
-            olive = "#995533"
-            muted_green_3 = "#995566"
-            steel_gray = "#995599"
-            steel_blue_5 = "#9955cc"
-            bright_blue_3 = "#9955ff"
-
-            olive_2 = "#998000"
-            olive_green_3 = "#998033"
-            muted_olive = "#998066"
-            cyan_green_dim_2 = "#998099"
-            cyan_4 = "#9980cc"
-            cyan_bright_3 = "#9980ff"
-
-            yellow_green = "#99aa00"
-            lime_olive = "#99aa33"
-            mint_green_4 = "#99aa66"
-            mint_gray = "#99aa99"
-            aqua_5 = "#99aacc"
-            sky_blue = "#99aaff"
-
-            neon_yellow_green = "#99d400"
-            lime_yellow = "#99d433"
-            light_lime = "#99d466"
-            pale_mint = "#99d499"
-            pale_aqua = "#99d4cc"
-            sky_blue_light = "#99d4ff"
-
-            neon_yellow_green_2 = "#99ff00"
-            lime_bright_2 = "#99ff33"
-            lime_3 = "#99ff66"
-            mint_3 = "#99ff99"
-            aqua_mint_3 = "#99ffcc"
-            aqua_6 = "#99ffff"
-
-            red = "#cc0000"
-            crimson_2 = "#cc0033"
-            hot_pink_red = "#cc0066"
-            magenta = "#cc0099"
-            bright_magenta = "#cc00cc"
-            violet_2 = "#cc00ff"
-
-            red_orange = "#cc2a00"
-            dark_red_gray = "#cc2a33"
-            muted_plum_2 = "#cc2a66"
-            dusty_purple_2 = "#cc2a99"
-            lavender_2 = "#cc2acc"
-            blue_purple_4 = "#cc2aff"
-
-            orange = "#cc5500"
-            burnt_orange = "#cc5533"
-            muted_red_orange = "#cc5566"
-            rose = "#cc5599"
-            pink = "#cc55cc"
-            bright_pink = "#cc55ff"
-
-            golden_brown = "#cc8000"
-            orange_brown = "#cc8033"
-            muted_orange = "#cc8066"
-            dusty_rose = "#cc8099"
-            pink_lavender = "#cc80cc"
-            light_purple = "#cc80ff"
-
-            gold = "#ccaa00"
-            golden_yellow = "#ccaa33"
-            light_gold = "#ccaa66"
-            pale_gold = "#ccaa99"
-            pale_cyan = "#ccaacc"
-            light_sky_blue = "#ccaaff"
-
-            yellow = "#ccd400"
-            bright_yellow = "#ccd433"
-            yellow_lime = "#ccd466"
-            pale_lime = "#ccd499"
-            pale_cyan_2 = "#ccd4cc"
-            sky_blue = "#ccd4ff"
-
-            neon_yellow = "#ccff00"
-            bright_yellow_2 = "#ccff33"
-            yellow_lime_2 = "#ccff66"
-            pale_yellow_green = "#ccff99"
-            mint_white = "#ccffcc"
-            ice_blue = "#ccffff"
-
-            red_2 = "#ff0000"
-            bright_red = "#ff0033"
-            hot_pink_red_2 = "#ff0066"
-            magenta_2 = "#ff0099"
-            neon_pink = "#ff00cc"
-            magenta_purple = "#ff00ff"
-
-            red_orange_2 = "#ff2a00"
-            crimson_orange = "#ff2a33"
-            pink_red = "#ff2a66"
-            hot_pink = "#ff2a99"
-            neon_pink_2 = "#ff2acc"
-            violet_pink = "#ff2aff"
-
-            orange_2 = "#ff5500"
-            bright_orange = "#ff5533"
-            coral = "#ff5566"
-            pink_orange = "#ff5599"
-            pink_2 = "#ff55cc"
-            bright_pink_2 = "#ff55ff"
-
-            orange_3 = "#ff8000"
-            bright_orange_2 = "#ff8033"
-            peach = "#ff8066"
-            light_pink = "#ff8099"
-            pink_3 = "#ff80cc"
-            light_magenta = "#ff80ff"
-
-            amber = "#ffaa00"
-            orange_yellow = "#ffaa33"
-            peach_2 = "#ffaa66"
-            light_peach = "#ffaa99"
-            pale_pink = "#ffaacc"
-            lavender_pink = "#ffaaff"
-
-            gold_yellow = "#ffd400"
-            bright_gold = "#ffd433"
-            pale_gold = "#ffd466"
-            light_gold = "#ffd499"
-            cream = "#ffd4cc"
-            lavender_cream = "#ffd4ff"
-
-            yellow_2 = "#ffff00"
-            bright_yellow_3 = "#ffff33"
-            pale_yellow = "#ffff66"
-            soft_yellow = "#ffff99"
-            cream_2 = "#ffffcc"
-            white = "#ffffff"
-        }
-
-        definitions = {
-            terminal_background = "black"
-
-            loc_background = "black"
-            loc_color = "white"
-
-            line_background = "black"
-            line_color = "white"
-
-            error_background = "bright_red"
-            error_color = "white"
-
-            severeError_background = "dark_red"
-            severeError_color = "white"
-
-            savior_background = "cyan_green_dim"
-            savior_color = "white"
-
-            enabled_background = "transparent"
-            enabled_color = "lime_green_2"
-
-            disabled_background = "transparent"
-            disabled_color = "red_orange_2"
-
-            highlight_background = "magenta_purple"
-            highlight_color = "white"
-
-            editor_background = "black"
-            editor_color = "white"
-
-            editor_loc_background = "black"
-            editor_loc_color = "white"
-        }
-        `).split("\n"))
+    // FilesystemService.createFile("vibrant.conf", "/data/palettes", 
+    // normalizeIndentation(
+    //     `
+    //     palette = {
+    //         black = "#000000"
+    //         black2 = "#131313"
+    //         darkgrey1 = "#1b1b1b"
+    //         darkgrey2 = "#272727"
+    //         grey = "#3d3d3d"
+    //         lightgrey1 = "#5d5d5d"
+    //         lightgrey2 = "#858585"
+    //         silver = "#b4b4b4"
+    //         white = "#ffffff"
+    //         bluegrey1 = "#c7cfdd"
+    //         bluegrey2 = "#92a1b9"
+    //         bluesteel = "#657392"
+    //         slate1 = "#424c6e"
+    //         navy1 = "#2a2f4e"
+    //         navy2 = "#1a1932"
+    //         navy3 = "#0e071b"
+    //         deepnavy = "#1c121c"
+    //         brown1 = "#391f21"
+    //         brown2 = "#5d2c28"
+    //         brown3 = "#8a4836"
+    //         brown4 = "#bf6f4a"
+    //         lightbrown1 = "#e69c69"
+    //         lightbrown2 = "#f6ca9f"
+    //         tan = "#f9e6cf"
+    //         gold = "#edab50"
+    //         orange1 = "#e07438"
+    //         redorange = "#c64524"
+    //         deepred = "#8e251d"
+    //         darkorange = "#ff5000"
+    //         orange2 = "#ed7614"
+    //         orangeyellow = "#ffa214"
+    //         yellow = "#ffc825"
+    //         paleyellow = "#ffeb57"
+    //         palegreen = "#d3fc7e"
+    //         green1 = "#99e65f"
+    //         green2 = "#5ac54f"
+    //         green3 = "#33984b"
+    //         darkgreen = "#1e6f50"
+    //         teal = "#134c4c"
+    //         darkblue1 = "#0c2e44"
+    //         darkblue2 = "#00396d"
+    //         blue = "#0069aa"
+    //         lightblue1 = "#0098dc"
+    //         lightblue2 = "#00cdf9"
+    //         lightblue3 = "#0cf1ff"
+    //         skyblue1 = "#4dc0d1"
+    //         skyblue2 = "#93e5ec"
+    //         skyblue3 = "#69cee4"
+    //         cyan = "#94fdff"
+    //         lightpink = "#fdd2ed"
+    //         pink1 = "#f389f5"
+    //         pink2 = "#db3ffd"
+    //         purple = "#7a09fa"
+    //         deepblue = "#3003d9"
+    //         darkblue3 = "#0c0293"
+    //         darkblue4 = "#03193f"
+    //         darkpurple1 = "#3b1443"
+    //         darkpurple2 = "#622461"
+    //         magenta1 = "#93388f"
+    //         magenta2 = "#ca52c9"
+    //         rose1 = "#c85086"
+    //         rose2 = "#f68187"
+    //         rose3 = "#f5555d"
+    //         red = "#ff0040"
+    //         red1 = "#ea323c"
+    //         red2 = "#c42430"
+    //         red3 = "#891e2b"
+    //         darkred = "#571c27"
+    //     }
+
+    //     definitions = {
+    //         terminal_background = "black"
+
+    //         loc_background = "black"
+    //         loc_color = "white"
+
+    //         line_background = "black"
+    //         line_color = "white"
+
+    //         error_background = "rose3"
+    //         error_color = "white"
+
+    //         severeError_background = "darkred"
+    //         severeError_color = "white"
+
+    //         savior_background = "grey"
+    //         savior_color = "white"
+
+    //         enabled_background = "transparent"
+    //         enabled_color = "green2"
+
+    //         disabled_background = "transparent"
+    //         disabled_color = "red2"
+
+    //         highlight_background = "magenta2"
+    //         highlight_color = "white"
+
+    //         editor_background = "black"
+    //         editor_color = "white"
+
+    //         editor_loc_background = "black"
+    //         editor_loc_color = "white"
+    //     }
+    //     `, 12
+    // ).split("\n"))
+
+    // FilesystemService.createFile("676_rgb.conf", "/data/palettes", 
+    // normalizeIndentation(
+    //     `
+    //     palette = {
+    //         black = "#000000"
+    //         deep_navy_blue = "#000033"
+    //         navy_blue = "#000066"
+    //         royal_blue_dark = "#000099"
+    //         royal_blue = "#0000cc"
+    //         pure_blue = "#0000ff"
+
+    //         very_dark_forest_green = "#002a00"
+    //         very_dark_teal = "#002a33"
+    //         deep_blue_teal = "#002a66"
+    //         deep_blue = "#002a99"
+    //         strong_blue = "#002acc"
+    //         bright_blue = "#002aff"
+
+    //         dark_forest_green = "#005500"
+    //         dark_olive_teal = "#005533"
+    //         dark_teal = "#005566"
+    //         steel_blue_dark = "#005599"
+    //         steel_blue = "#0055cc"
+    //         bright_steel_blue = "#0055ff"
+
+    //         green = "#008000"
+    //         green_teal = "#008033"
+    //         teal_green = "#008066"
+    //         teal = "#008099"
+    //         cyan_teal = "#0080cc"
+    //         cyan = "#0080ff"
+
+    //         bright_green = "#00aa00"
+    //         bright_lime_green = "#00aa33"
+    //         neon_green = "#00aa66"
+    //         mint_green = "#00aa99"
+    //         aqua_green = "#00aacc"
+    //         aqua = "#00aaff"
+
+    //         neon_green_bright = "#00d400"
+    //         vivid_lime_green = "#00d433"
+    //         neon_lime = "#00d466"
+    //         bright_mint = "#00d499"
+    //         bright_aqua = "#00d4cc"
+    //         cyan_bright = "#00d4ff"
+
+    //         pure_green = "#00ff00"
+    //         neon_lime_2 = "#00ff33"
+    //         lime_green = "#00ff66"
+    //         mint = "#00ff99"
+    //         mint_aqua = "#00ffcc"
+    //         aqua_2 = "#00ffff"
+
+    //         very_dark_red = "#330000"
+    //         very_dark_magenta = "#330033"
+    //         dark_purple = "#330066"
+    //         deep_purple = "#330099"
+    //         blue_purple = "#3300cc"
+    //         blue_violet = "#3300ff"
+
+    //         dark_olive = "#332a00"
+    //         dark_warm_gray = "#332a33"
+    //         dark_slate_blue = "#332a66"
+    //         slate_blue = "#332a99"
+    //         blue_slate = "#332acc"
+    //         blue = "#332aff"
+
+    //         olive_green_dark = "#335500"
+    //         muted_green = "#335533"
+    //         dark_teal_gray = "#335566"
+    //         steel_blue_dim = "#335599"
+    //         steel_blue_2 = "#3355cc"
+    //         bright_blue = "#3355ff"
+
+    //         green_dim = "#338000"
+    //         green_teal_dim = "#338033"
+    //         teal_green_dim = "#338066"
+    //         cyan_teal_dim = "#338099"
+    //         cyan = "#3380cc"
+    //         bright_cyan = "#3380ff"
+
+    //         green_bright = "#33aa00"
+    //         lime_green = "#33aa33"
+    //         bright_green_2 = "#33aa66"
+    //         mint_green_2 = "#33aa99"
+    //         aqua_green_2 = "#33aacc"
+    //         cyan_bright_2 = "#33aaff"
+
+    //         neon_green_2 = "#33d400"
+    //         neon_lime = "#33d433"
+    //         lime_bright = "#33d466"
+    //         mint_bright = "#33d499"
+    //         aqua_bright = "#33d4cc"
+    //         cyan_bright_3 = "#33d4ff"
+
+    //         neon_lime_bright = "#33ff00"
+    //         lime_bright_2 = "#33ff33"
+    //         bright_lime = "#33ff66"
+    //         mint_bright_2 = "#33ff99"
+    //         aqua_mint = "#33ffcc"
+    //         aqua_bright_2 = "#33ffff"
+
+    //         dark_red = "#660000"
+    //         dark_crimson = "#660033"
+    //         dark_purple_red = "#660066"
+    //         purple = "#660099"
+    //         blue_purple_2 = "#6600cc"
+    //         vivid_blue = "#6600ff"
+
+    //         dark_brown_orange = "#662a00"
+    //         dark_warm_gray_2 = "#662a33"
+    //         muted_purple = "#662a66"
+    //         slate_purple = "#662a99"
+    //         slate_blue_2 = "#662acc"
+    //         blue_2 = "#662aff"
+
+    //         olive_brown = "#665500"
+    //         olive_green = "#665533"
+    //         muted_teal = "#665566"
+    //         steel_blue_3 = "#665599"
+    //         steel_blue_4 = "#6655cc"
+    //         bright_blue_2 = "#6655ff"
+
+    //         olive_green_2 = "#668000"
+    //         olive_teal = "#668033"
+    //         muted_green_2 = "#668066"
+    //         cyan_green_dim = "#668099"
+    //         cyan_2 = "#6680cc"
+    //         cyan_bright_2 = "#6680ff"
+
+    //         green_bright_2 = "#66aa00"
+    //         lime_green_2 = "#66aa33"
+    //         mint_green_3 = "#66aa66"
+    //         mint = "#66aa99"
+    //         aqua_3 = "#66aacc"
+    //         cyan_3 = "#66aaff"
+
+    //         neon_green_3 = "#66d400"
+    //         neon_lime_2 = "#66d433"
+    //         lime_bright_3 = "#66d466"
+    //         mint_bright_3 = "#66d499"
+    //         aqua_bright_3 = "#66d4cc"
+    //         cyan_bright_4 = "#66d4ff"
+
+    //         neon_lime_3 = "#66ff00"
+    //         lime_2 = "#66ff33"
+    //         bright_lime_2 = "#66ff66"
+    //         mint_2 = "#66ff99"
+    //         aqua_mint_2 = "#66ffcc"
+    //         aqua_4 = "#66ffff"
+
+    //         dark_red_2 = "#990000"
+    //         crimson = "#990033"
+    //         deep_magenta = "#990066"
+    //         purple_2 = "#990099"
+    //         bright_purple = "#9900cc"
+    //         violet = "#9900ff"
+
+    //         dark_orange_brown = "#992a00"
+    //         warm_gray = "#992a33"
+    //         muted_plum = "#992a66"
+    //         dusty_purple = "#992a99"
+    //         lavender = "#992acc"
+    //         blue_purple_3 = "#992aff"
+
+    //         olive_brown_2 = "#995500"
+    //         olive = "#995533"
+    //         muted_green_3 = "#995566"
+    //         steel_gray = "#995599"
+    //         steel_blue_5 = "#9955cc"
+    //         bright_blue_3 = "#9955ff"
+
+    //         olive_2 = "#998000"
+    //         olive_green_3 = "#998033"
+    //         muted_olive = "#998066"
+    //         cyan_green_dim_2 = "#998099"
+    //         cyan_4 = "#9980cc"
+    //         cyan_bright_3 = "#9980ff"
+
+    //         yellow_green = "#99aa00"
+    //         lime_olive = "#99aa33"
+    //         mint_green_4 = "#99aa66"
+    //         mint_gray = "#99aa99"
+    //         aqua_5 = "#99aacc"
+    //         sky_blue = "#99aaff"
+
+    //         neon_yellow_green = "#99d400"
+    //         lime_yellow = "#99d433"
+    //         light_lime = "#99d466"
+    //         pale_mint = "#99d499"
+    //         pale_aqua = "#99d4cc"
+    //         sky_blue_light = "#99d4ff"
+
+    //         neon_yellow_green_2 = "#99ff00"
+    //         lime_bright_2 = "#99ff33"
+    //         lime_3 = "#99ff66"
+    //         mint_3 = "#99ff99"
+    //         aqua_mint_3 = "#99ffcc"
+    //         aqua_6 = "#99ffff"
+
+    //         red = "#cc0000"
+    //         crimson_2 = "#cc0033"
+    //         hot_pink_red = "#cc0066"
+    //         magenta = "#cc0099"
+    //         bright_magenta = "#cc00cc"
+    //         violet_2 = "#cc00ff"
+
+    //         red_orange = "#cc2a00"
+    //         dark_red_gray = "#cc2a33"
+    //         muted_plum_2 = "#cc2a66"
+    //         dusty_purple_2 = "#cc2a99"
+    //         lavender_2 = "#cc2acc"
+    //         blue_purple_4 = "#cc2aff"
+
+    //         orange = "#cc5500"
+    //         burnt_orange = "#cc5533"
+    //         muted_red_orange = "#cc5566"
+    //         rose = "#cc5599"
+    //         pink = "#cc55cc"
+    //         bright_pink = "#cc55ff"
+
+    //         golden_brown = "#cc8000"
+    //         orange_brown = "#cc8033"
+    //         muted_orange = "#cc8066"
+    //         dusty_rose = "#cc8099"
+    //         pink_lavender = "#cc80cc"
+    //         light_purple = "#cc80ff"
+
+    //         gold = "#ccaa00"
+    //         golden_yellow = "#ccaa33"
+    //         light_gold = "#ccaa66"
+    //         pale_gold = "#ccaa99"
+    //         pale_cyan = "#ccaacc"
+    //         light_sky_blue = "#ccaaff"
+
+    //         yellow = "#ccd400"
+    //         bright_yellow = "#ccd433"
+    //         yellow_lime = "#ccd466"
+    //         pale_lime = "#ccd499"
+    //         pale_cyan_2 = "#ccd4cc"
+    //         sky_blue = "#ccd4ff"
+
+    //         neon_yellow = "#ccff00"
+    //         bright_yellow_2 = "#ccff33"
+    //         yellow_lime_2 = "#ccff66"
+    //         pale_yellow_green = "#ccff99"
+    //         mint_white = "#ccffcc"
+    //         ice_blue = "#ccffff"
+
+    //         red_2 = "#ff0000"
+    //         bright_red = "#ff0033"
+    //         hot_pink_red_2 = "#ff0066"
+    //         magenta_2 = "#ff0099"
+    //         neon_pink = "#ff00cc"
+    //         magenta_purple = "#ff00ff"
+
+    //         red_orange_2 = "#ff2a00"
+    //         crimson_orange = "#ff2a33"
+    //         pink_red = "#ff2a66"
+    //         hot_pink = "#ff2a99"
+    //         neon_pink_2 = "#ff2acc"
+    //         violet_pink = "#ff2aff"
+
+    //         orange_2 = "#ff5500"
+    //         bright_orange = "#ff5533"
+    //         coral = "#ff5566"
+    //         pink_orange = "#ff5599"
+    //         pink_2 = "#ff55cc"
+    //         bright_pink_2 = "#ff55ff"
+
+    //         orange_3 = "#ff8000"
+    //         bright_orange_2 = "#ff8033"
+    //         peach = "#ff8066"
+    //         light_pink = "#ff8099"
+    //         pink_3 = "#ff80cc"
+    //         light_magenta = "#ff80ff"
+
+    //         amber = "#ffaa00"
+    //         orange_yellow = "#ffaa33"
+    //         peach_2 = "#ffaa66"
+    //         light_peach = "#ffaa99"
+    //         pale_pink = "#ffaacc"
+    //         lavender_pink = "#ffaaff"
+
+    //         gold_yellow = "#ffd400"
+    //         bright_gold = "#ffd433"
+    //         pale_gold = "#ffd466"
+    //         light_gold = "#ffd499"
+    //         cream = "#ffd4cc"
+    //         lavender_cream = "#ffd4ff"
+
+    //         yellow_2 = "#ffff00"
+    //         bright_yellow_3 = "#ffff33"
+    //         pale_yellow = "#ffff66"
+    //         soft_yellow = "#ffff99"
+    //         cream_2 = "#ffffcc"
+    //         white = "#ffffff"
+    //     }
+
+    //     definitions = {
+    //         terminal_background = "black"
+
+    //         loc_background = "black"
+    //         loc_color = "white"
+
+    //         line_background = "black"
+    //         line_color = "white"
+
+    //         error_background = "bright_red"
+    //         error_color = "white"
+
+    //         severeError_background = "dark_red"
+    //         severeError_color = "white"
+
+    //         savior_background = "cyan_green_dim"
+    //         savior_color = "white"
+
+    //         enabled_background = "transparent"
+    //         enabled_color = "lime_green_2"
+
+    //         disabled_background = "transparent"
+    //         disabled_color = "red_orange_2"
+
+    //         highlight_background = "magenta_purple"
+    //         highlight_color = "white"
+
+    //         editor_background = "black"
+    //         editor_color = "white"
+
+    //         editor_loc_background = "black"
+    //         editor_loc_color = "white"
+    //     }
+    //     `).split("\n"))
 
     DiagnosticService.enable();
 }
@@ -3689,20 +3745,20 @@ class OS {
         for (let y = 0; y < height; y++) {
             for (let x = 0; x < width; x++) {
                 const color = content[y][x];
-                let closest = '';
+                // let closest = '';
 
-                if (seenColors.has(color)) {
-                    closest = seenColors.get(color);
-                } else {
-                    closest = ColorService.getColor(color);
-                    seenColors.set(color, closest);
-                }
+                // if (seenColors.has(color)) {
+                //     closest = seenColors.get(color);
+                // } else {
+                //     closest = ColorService.getColor(color);
+                //     seenColors.set(color, closest);
+                // }
 
                 // closest = ColorService.getColor(color);
                 // closest = color;
 
-                if(color !== closest) differentColors++; 
-                ctx.fillStyle = closest;
+                // if(color !== closest) differentColors++; 
+                ctx.fillStyle = color;
                 ctx.fillRect(x * pixelSize, y * pixelSize, pixelSize, pixelSize);
             }
         }
@@ -3731,7 +3787,7 @@ class OS {
         DiagnosticService.record(`OS_pixelMatrix end   ${this.timestamp(template)} renderTime=${renderEnd}ms`);
         // get the % of pixels that had a different color than the palette's closest match
         const colorDifference = (differentColors / totalPixels) * 100;
-        DiagnosticService.record(`OS_pixelMatrix color_difference ${colorDifference.toFixed(2)}% (${differentColors} out of ${totalPixels} pixels)`);
+        // DiagnosticService.record(`OS_pixelMatrix color_difference ${colorDifference.toFixed(2)}% (${differentColors} out of ${totalPixels} pixels)`);
 
         const line = document.createElement("div");
         line.classList.add("line");
