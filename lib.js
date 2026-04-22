@@ -974,9 +974,11 @@ class DiagnosticService {
     static os = null;
 
     static diagnosticData = [];
+    static logFile = null;
 
-    static enable(){
+    static enable(path){
         this.enabled = true;
+        this.logFile = path;
         DiagnosticService.record("DiagnosticService_enable");
     }
 
@@ -2634,6 +2636,7 @@ function createFilesystem(){
             color_palette = "default"
             default_list_recursive_spacing = 2
             pixel_size = 1
+            log_path = "/config/logs"
             `, 12
         ).split("\n")
     );
