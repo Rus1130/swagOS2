@@ -6,7 +6,8 @@ os.line('Welcome to swagOS2 ===', "===");
 os.commandLine();
 os.sendCommand("ls -r -s")
 //os.sendCommand("ls -r=1")
-os.sendCommand("v doc/i/t/p.img")
+os.sendCommand("v doc/i/t/p.img");
+os.sendCommand("service logs");
 //os.sendCommand("ef c/u")
 // os.sendCommand("service logs")
 //os.sendCommand("p doc/i/t/s.img")

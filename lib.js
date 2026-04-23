@@ -634,7 +634,7 @@ class FilesystemService {
      * @param {"file"|"directory"|"full"|"none"} assumption
      * @returns 
      */
-    static resolvePath(path, assumption = "none") {
+    static resolvePath(path, assumption = "none", log = true) {
     if (!this.enabled) throw new OSError("FilesystemService is disabled");
 
     const parts = path.split("/").filter(p => p.length > 0);
@@ -725,7 +725,7 @@ class FilesystemService {
         node = matches[0];
     }
 
-    DiagnosticService.record(
+    if(log == true) DiagnosticService.record(
         `FilesystemService_resolvePath ${path} -> ${node instanceof OSDirectory ? "directory" : "file"
         }: ${node.name}${node instanceof OSFile ? `.${node.type}` : ""}`
     );
@@ -880,7 +880,7 @@ class SaviorService {
     }
 
     /**
-     * Notify the SaviorService that the command line will be unavailable, so it can take action to ensure the user is not left without a command line.
+     * Notifies the savior service that the command line is supposed to be unavailable so it will not take steps to restore it
      * @returns 
      */
     static notify(){
@@ -890,6 +890,10 @@ class SaviorService {
         DiagnosticService.record("SaviorService_notify");
     }
 
+    /**
+     * Unnotifies the savior service that the command line is supposed to be unavailable. Should be called when the command line is available again after being unavailable for some reason.
+     * @returns 
+     */
     static unnotify(){
         if(!this.enabled) return;
         if(this.#notified == false) return;
@@ -973,8 +977,9 @@ class DiagnosticService {
     static enabled = false;
     static os = null;
 
+    static separator = "\x1F";
+
     static diagnosticData = [];
-    static logFile = null;
 
     static enable(path){
         this.enabled = true;
@@ -1038,12 +1043,15 @@ class DiagnosticService {
 
     static note(message){
         if(!this.enabled) return;
-        this.diagnosticData.push({
+
+        const note = {
             type: "note",
             data: {
                 message: message,
             }
-        })
+        }
+
+        this.diagnosticData.push(note);
     }
 
     static getData(){
@@ -1085,6 +1093,10 @@ class CommandExecService {
         }
     }
 
+    /**
+     * Postpone command execution
+     * @returns 
+     */
     static postpone(){
         if(!this.enabled) return;
         CommandExecService.queue.length = 0;
@@ -1092,6 +1104,10 @@ class CommandExecService {
         SaviorService.notify();
     }
 
+    /**
+     * resume normal command execution after postponement
+     * @returns 
+     */
     static continue(){
         if(!this.enabled) return;
         if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
@@ -1119,6 +1135,16 @@ class CommandExecService {
             DiagnosticService.record("CommandExecService_enqueue "+chain.simplify());
             this.queue.push({ chain, resolve, reject });
         });
+    }
+
+    static instant(chain) {
+        if(!this.enabled) return;
+        if (!this.os) throw new OSError("CommandExecService not initialized with OS instance");
+        DiagnosticService.record("CommandExecService_instant "+chain.simplify());
+        
+        // push it to the front of the queue and run immediately
+        // this.queue.unshift({ chain, resolve, reject });
+        // this.runNext();
     }
 
     static async runNext() {
@@ -1452,6 +1478,22 @@ class OSFile {
         this.#size = OSFile.calculateSize(newContent);
     }
 
+    append(content, newline = true){
+
+        if(Array.isArray(content)){
+            if(newline) this.#content.push(...content);
+            else {
+                if(this.#content.length === 0) this.#content.push(content[0]);
+                else this.#content[this.#content.length - 1] += content[0];
+            }
+        } else {
+            if(newline) this.#content.push(content);
+            else this.#content[this.#content.length - 1] += content;
+        }
+        
+        this.#size = OSFile.calculateSize(this.#content);
+    }
+
     getSize(formatted = false){
 
         if(formatted == false) return this.#size;
@@ -1567,90 +1609,28 @@ function defineCommands(){
     }, (params, os, signal) => {
         const action = params.args[0];
         if (action === "logs") {
-    if (params.flags.clear) {
-        DiagnosticService.diagnosticData.length = 0;
-        return;
-    }
-
-    const data = DiagnosticService.getData();
-    const timestampTemplate = ConfigService.get("timestamp_template");
-
-    const output = [];
-
-    let lastRaw = null;
-    let lastStamp = null;
-    let count = 0;
-
-    const pushLast = () => {
-        if (!lastRaw) return;
-
-        let line = lastRaw;
-
-        // apply compression suffix
-        if (count > 1) {
-            line += ` (x${count})`;
-        }
-
-        // extract timestamp (no regex needed)
-        const endIdx = line.indexOf("]");
-        let stamp = line.slice(1, endIdx);
-
-        if (stamp === lastStamp) {
-            const blank = " ".repeat(stamp.length);
-            line = `[${blank}]` + line.slice(endIdx + 1);
-        } else {
-            lastStamp = stamp;
-        }
-
-        output.push({
-            type: "line",
-            content: line.slice(endIdx + 2), // skip "] "
-            loc: `[${stamp}]`
-        });
-    };
-
-    for (let i = 0; i < data.length; i++) {
-        const entry = data[i];
-
-        let line;
-
-        const time = os.timestamp(timestampTemplate, entry.data.timestamp);
-
-        if (entry.type === "record") {
-            let msg = entry.data.message;
-
-            if (params.flags.trace) {
-                const stack = entry.data.stack
-                    .join(" -> ")
-                    .replace(
-                        "Xsrv.runNext -> OpSys.runChain -> OpSys.runSingle",
-                        "Execution Pipeline"
-                    );
-
-                msg += `\n    ${stack}`;
+            if (params.flags.clear) {
+                DiagnosticService.diagnosticData.length = 0;
+                return;
             }
 
-            line = `[${time}] ${msg}`;
-        } else {
-            line = `[${time}] [NOTE] ${entry.data.message}`;
-        }
+            CommandExecService.instant(os.parseCommand("diagnosticflush"));
 
-        // compression logic
-        if (line === lastRaw) {
-            count++;
-        } else {
-            pushLast();
-            lastRaw = line;
-            count = 1;
-        }
-    }
+            const logFilePath = ConfigService.get("service_log_path");
+            if (!logFilePath) return { type: "error", content: "Diagnostic log file not configured. Set the 'service_log_path' config value to enable log saving." };
 
-    // flush last
-    pushLast();
+            const logFile = FilesystemService.resolvePath(logFilePath);
 
-    return params.flags.lines
-        ? output.slice(-params.flags.lines)
-        : output;
+            return logFile.read().map((x) => {
+                const parts = x.split(DiagnosticService.separator);
+                return {
+                    type: "line",
+                    content: parts[1],
+                    loc: parts[0],
+                }
+            });
+
+
         } else if(action === "list"){
             const services = ServiceManager.services;
             const lines = [];
@@ -2585,26 +2565,78 @@ function defineCommands(){
         }
     })
 
-    CommandService.defineCommand("bgtask", {
+    CommandService.defineCommand("diagnosticflush", {
         options: {
-            description: "Runs a command in the background and outputs its result when it's done",
-            alias: "bgt",
-            hidden: true,
+            description: "flush diagnostic data to the log file",
+            hidden: true
         },
-        schema: [
-            {
-                type: "positional",
-                name: "option",
-                description: "The command to run in the background",
-                required: true,
-                options: ["start", "stop"],
-            },
-        ],
+        schema: []
     }, ({args, flags}, os, signal) => {
-        const option = args[0];
+        const logFile = FilesystemService.resolvePath(ConfigService.get("service_log_path"), "full");
+
+        if(!(logFile instanceof OSFile)) throw new OSError(`Log file not found at path "${ConfigService.get("service_log_path")}"`);
+        
+        const data = DiagnosticService.getData();
+        const template = ConfigService.get("timestamp_template");
+
+        const output = [];
+
+        let lastLine = null;
+        let lastTimestamp = null;
+        let count = 0;
+
+        // optional: cache timestamps (huge win if many logs share times)
+        const timeCache = new Map();
+        const getTime = (ts) => {
+            if (!timeCache.has(ts)) {
+                timeCache.set(ts, os.timestamp(template, ts));
+            }
+            return timeCache.get(ts);
+        };
+
+        const pushLast = () => {
+            if (!lastLine) return;
+
+            let line = lastLine;
+
+            if (count > 1) {
+                line += ` (x${count})`;
+            }
+
+            output.push(line);
+        };
+
+        for (let i = 0; i < data.length; i++) {
+            const entry = data[i];
+
+            const time = getTime(entry.data.timestamp);
+
+            const msg = entry.data.message;
+            let line = '';
+
+            line += `[${time}]`;
+
+            if(entry.type === "note"){
+                line += " [NOTE]";
+            }
+
+            line += `${DiagnosticService.separator}${msg}`;
+
+            if (line === lastLine) {
+                count++;
+            } else {
+                pushLast();
+                lastLine = line;
+                count = 1;
+            }
+        }
+
+        pushLast();
+
+        logFile.append(output);
     });
 
-    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "bgtask", "view"]);
+    CommandService.bulkRegister(["print", "obuffer", "commandline", "linecount", "help", "clear", "service", "findtext", "makefile", "makedirectory", "list", "changedirectory", "peek", "time", "colortest", "fileinfo", "remove", "config", "editfile", "diagnosticflush", "view"]);
 }
 
 function normalizeIndentation(string, indentSize = 4){
@@ -2622,6 +2654,9 @@ function createFilesystem(){
     FilesystemService.createDirectory("config", "/")
     FilesystemService.createDirectory("data", "/")
 
+    FilesystemService.createDirectory("logs", "/data")
+    FilesystemService.createFile("service.log", "/data/logs", [])
+
     FilesystemService.createFile("welcome.txt", "/", [
         "Hello there!",
         "This is a test file.",
@@ -2636,7 +2671,7 @@ function createFilesystem(){
             color_palette = "default"
             default_list_recursive_spacing = 2
             pixel_size = 1
-            log_path = "/config/logs"
+            service_log_path = "data/logs/service.log"
             `, 12
         ).split("\n")
     );
